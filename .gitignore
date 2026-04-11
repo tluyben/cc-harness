@@ -1,0 +1,23 @@
+# Build output
+dist/
+
+# Deno cache
+.deno/
+
+# Node / npm artifacts (package-lock is generated if someone runs npm install)
+node_modules/
+package-lock.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment overrides
+.env
+.env.*

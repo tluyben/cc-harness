@@ -1,0 +1,11 @@
+{
+  "name": "cc-harnass",
+  "version": "1.0.0",
+  "description": "SSE harness for Claude Code and similar CLI AI tools",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "start": "bash -c 'DENO=${DENO:-${HOME}/.deno/bin/deno}; command -v deno &>/dev/null && DENO=deno; $DENO run --allow-all src/server.ts'",
+    "dev":   "bash -c 'DENO=${DENO:-${HOME}/.deno/bin/deno}; command -v deno &>/dev/null && DENO=deno; $DENO run --allow-all --watch src/server.ts'",
+    "test":  "bash scripts/test.sh"
+  }
+}

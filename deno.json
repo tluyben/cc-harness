@@ -1,0 +1,17 @@
+{
+  "$schema": "https://deno.land/x/deno/cli/schemas/config-file.v1.json",
+  "name": "cc-harnass",
+  "version": "1.0.0",
+  "exports": "./src/server.ts",
+  "tasks": {
+    "dev":   "deno run --allow-all src/server.ts",
+    "test":  "deno test --allow-all tests/",
+    "build": "deno compile --allow-all --output dist/cc-harnass src/server.ts"
+  },
+  "imports": {
+    "jsr:@std/assert@^1": "jsr:@std/assert@^1"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}
