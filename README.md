@@ -68,6 +68,20 @@ Returns `{"status":"ok"}` — useful for readiness probes.
 PORT=3000 CLAUDE_PATH=/opt/claude/bin/claude ./dist/cc-harnass
 ```
 
+### Using rust-agent as the backend
+
+[rust-agent](../rust-agent) ships a `claudec` wrapper that is a compatible
+drop-in for the real `claude` binary:
+
+```bash
+CLAUDE_PATH=/path/to/rust-agent/claudec ./dist/cc-harnass
+```
+
+`claudec` accepts the same flags the harness passes and emits the same
+`stream-json` event format.  Session history follows `--continue` semantics:
+without it each call is a fresh session; with it a JSONL journal is written so
+the session can be resumed.
+
 ---
 
 ## Example usage
