@@ -347,9 +347,9 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
                     ...m,
                     blocks: m.blocks.map(b => {
                       if (b.index !== index) return b
-                      if (delta.type === 'text_delta') return { ...b, content: b.content + delta.text }
-                      if (delta.type === 'thinking_delta') return { ...b, content: b.content + delta.thinking }
-                      if (delta.type === 'input_json_delta') return { ...b, inputJson: (b.inputJson || '') + delta.input_json }
+                      if (delta.type === 'text_delta') return { ...b, content: b.content + (delta.text || '') }
+                      if (delta.type === 'thinking_delta') return { ...b, content: b.content + (delta.thinking || '') }
+                      if (delta.type === 'input_json_delta') return { ...b, inputJson: (b.inputJson || '') + (delta.input_json || '') }
                       return b
                     })
                   }
