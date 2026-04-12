@@ -578,6 +578,30 @@ textarea.chat-input:disabled { opacity: 0.5; }
 .btn-send:hover:not(:disabled) { background: var(--accent-dim); }
 .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.btn-cancel {
+  background: transparent;
+  border: 1.5px solid var(--text-dim);
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: 11px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-cancel:hover { color: #e05c5c; border-color: #e05c5c; }
+
+.message-cancelled {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+  margin-top: 4px;
+}
+
 /* ── add project modal ───────────────────────────────────── */
 .modal-backdrop {
   position: fixed;

@@ -75,6 +75,7 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
   const fileInputRef = useRef(null)
   const sessionRef = useRef(null)
   const inputAreaRef = useRef(null)
+  const abortRef = useRef(null)
 
   // JS layout enforcement: if CSS flex chain fails to constrain height,
   // explicitly set message-list height so the input area stays visible.
@@ -210,6 +211,10 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
     return prompt
   }
 
+  const cancelMessage = () => {
+    abortRef.current?.abort()
+  }
+
   const sendMessage = async () => {
     const trimmed = text.trim()
     if ((!trimmed && pendingAttachments.length === 0) || session.streaming) return
@@ -220,6 +225,8 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
 
     const userMsgId = genId()
     const asstMsgId = genId()
+    const abort = new AbortController()
+    abortRef.current = abort
 
     setText('')
     setPendingAttachments([])
@@ -242,7 +249,8 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, dir: session.dir, continue: !isFirst })
+        body: JSON.stringify({ prompt, dir: session.dir, continue: !isFirst }),
+        signal: abort.signal,
       })
 
       const reader = res.body.getReader()
@@ -300,15 +308,27 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
         streaming: false
       }))
     } catch (err) {
-      onUpdate(s => ({
-        ...s,
-        messages: s.messages.map(m =>
-          m.id === asstMsgId
-            ? { ...m, streaming: false, error: err.message }
-            : m
-        ),
-        streaming: false
-      }))
+      if (err.name === 'AbortError') {
+        onUpdate(s => ({
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === asstMsgId
+              ? { ...m, streaming: false, cancelled: true }
+              : m
+          ),
+          streaming: false
+        }))
+      } else {
+        onUpdate(s => ({
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === asstMsgId
+              ? { ...m, streaming: false, error: err.message }
+              : m
+          ),
+          streaming: false
+        }))
+      }
     }
   }
 
@@ -386,12 +406,20 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
             disabled={session.streaming}
             rows={1}
           />
-          <button
-            className="btn-send"
-            onClick={sendMessage}
-            disabled={session.streaming || (!text.trim() && pendingAttachments.length === 0)}
-            title="Send (Enter)"
-          >↑</button>
+          {session.streaming ? (
+            <button
+              className="btn-cancel"
+              onClick={cancelMessage}
+              title="Cancel"
+            >■</button>
+          ) : (
+            <button
+              className="btn-send"
+              onClick={sendMessage}
+              disabled={!text.trim() && pendingAttachments.length === 0}
+              title="Send (Enter)"
+            >↑</button>
+          )}
         </div>
 
         <input
@@ -441,6 +469,9 @@ function Message({ msg }) {
             className={`message-content${msg.streaming ? ' streaming-cursor' : ''}`}
             dangerouslySetInnerHTML={{ __html: html }}
           />
+        )}
+        {msg.cancelled && (
+          <div className="message-cancelled">Cancelled by user</div>
         )}
         {msg.error && (
           <div className="message-error">⚠ {msg.error}</div>
