@@ -66,6 +66,49 @@ function readAsArrayBuffer(file) {
   })
 }
 
+const TOOL_ICONS = {
+  bash: '$', execute_bash: '$', run_command: '$', shell: '$',
+  read: '📄', read_file: '📄', view: '📄', cat: '📄',
+  write: '✎', write_file: '✎', create_file: '✎',
+  edit: '✎', multiedit: '✎',
+  glob: '📁', ls: '📁', list_files: '📁', list_directory: '📁',
+  grep: '🔍', search: '🔍', web_search: '🔍',
+  web_fetch: '🌐', fetch: '🌐',
+  agent: '◈', task: '◈',
+  todo_write: '✓', todowrite: '✓',
+}
+
+function toolIcon(name) {
+  if (!name) return '⚙'
+  return TOOL_ICONS[name.toLowerCase()] ?? '⚙'
+}
+
+function formatToolInput(name, input) {
+  if (!input || typeof input !== 'object') return String(input ?? '')
+  // Bash
+  if (input.command !== undefined) return input.command
+  // File write — path + content snippet
+  if (input.file_path !== undefined && input.content !== undefined) {
+    const snip = input.content.length > 400 ? input.content.slice(0, 400) + '…' : input.content
+    return `${input.file_path}\n\n${snip}`
+  }
+  // File edit — path + diff snippet
+  if (input.file_path !== undefined && input.old_string !== undefined) {
+    const snipOld = input.old_string.length > 120 ? input.old_string.slice(0, 120) + '…' : input.old_string
+    const snipNew = input.new_string?.length > 120 ? input.new_string.slice(0, 120) + '…' : (input.new_string ?? '')
+    return `${input.file_path}\n\n- ${snipOld}\n+ ${snipNew}`
+  }
+  // File path only
+  if (input.file_path !== undefined) return input.file_path
+  if (input.path !== undefined && input.pattern === undefined) return input.path
+  // Search/glob
+  if (input.pattern !== undefined) return input.path ? `${input.pattern}  in  ${input.path}` : input.pattern
+  if (input.query !== undefined) return input.query
+  if (input.url !== undefined) return input.url
+  if (input.prompt !== undefined) return input.prompt.length > 300 ? input.prompt.slice(0, 300) + '…' : input.prompt
+  return JSON.stringify(input, null, 2)
+}
+
 export default function ChatSession({ session, onUpdate, draft, onDraftChange }) {
   const [text, setText] = useState(draft.text)
   const [pendingAttachments, setPendingAttachments] = useState(draft.attachments)
@@ -124,12 +167,15 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
     if (session.messages.length > 0) scrollToBottom(true)
   }, [session.messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Scroll as streaming content grows
+  // Scroll as streaming content grows — track last block's content
   const lastMsg = session.messages[session.messages.length - 1]
-  const lastContent = lastMsg?.content ?? ''
+  const lastBlocks = lastMsg?.blocks
+  const lastBlockSnapshot = lastBlocks?.length
+    ? (lastBlocks[lastBlocks.length - 1].content || lastBlocks[lastBlocks.length - 1].inputJson || '')
+    : ''
   useEffect(() => {
     if (session.streaming) scrollToBottom(false)
-  }, [lastContent]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lastBlockSnapshot]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const processFiles = useCallback(async (files) => {
     const results = []
@@ -239,7 +285,7 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
       messages: [
         ...s.messages,
         { id: userMsgId, role: 'user', content: trimmed, attachments },
-        { id: asstMsgId, role: 'assistant', content: '', streaming: true, error: null }
+        { id: asstMsgId, role: 'assistant', blocks: [], streaming: true, error: null }
       ],
       streaming: true,
       isFirst: false,
@@ -270,18 +316,57 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
           let event
           try { event = JSON.parse(line.slice(6)) } catch { continue }
 
-          if (
-            event.type === 'stream_event' &&
-            event.event?.type === 'content_block_delta' &&
-            event.event?.delta?.type === 'text_delta'
-          ) {
-            const chunk = event.event.delta.text
-            onUpdate(s => ({
-              ...s,
-              messages: s.messages.map(m =>
-                m.id === asstMsgId ? { ...m, content: m.content + chunk } : m
-              )
-            }))
+          if (event.type === 'stream_event') {
+            const ev = event.event
+            if (!ev) continue
+
+            if (ev.type === 'content_block_start') {
+              const cb = ev.content_block
+              const newBlock = {
+                index: ev.index,
+                type: cb.type,
+                content: cb.type !== 'tool_use' ? (cb.text || cb.thinking || '') : '',
+                ...(cb.type === 'tool_use' && { toolId: cb.id, name: cb.name, inputJson: '' }),
+                done: false,
+              }
+              onUpdate(s => ({
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === asstMsgId ? { ...m, blocks: [...m.blocks, newBlock] } : m
+                )
+              }))
+            }
+
+            if (ev.type === 'content_block_delta') {
+              const { index, delta } = ev
+              onUpdate(s => ({
+                ...s,
+                messages: s.messages.map(m => {
+                  if (m.id !== asstMsgId) return m
+                  return {
+                    ...m,
+                    blocks: m.blocks.map(b => {
+                      if (b.index !== index) return b
+                      if (delta.type === 'text_delta') return { ...b, content: b.content + delta.text }
+                      if (delta.type === 'thinking_delta') return { ...b, content: b.content + delta.thinking }
+                      if (delta.type === 'input_json_delta') return { ...b, inputJson: (b.inputJson || '') + delta.input_json }
+                      return b
+                    })
+                  }
+                })
+              }))
+            }
+
+            if (ev.type === 'content_block_stop') {
+              onUpdate(s => ({
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === asstMsgId
+                    ? { ...m, blocks: m.blocks.map(b => b.index === ev.index ? { ...b, done: true } : b) }
+                    : m
+                )
+              }))
+            }
           }
 
           if (event.type === 'error') {
@@ -434,48 +519,102 @@ export default function ChatSession({ session, onUpdate, draft, onDraftChange })
   )
 }
 
+function ThinkingBlock({ block, streaming }) {
+  const [expanded, setExpanded] = useState(false)
+  const active = streaming && !block.done
+  return (
+    <div className={`block-thinking${active ? ' active' : ''}`}>
+      <button className="thinking-header" onClick={() => setExpanded(e => !e)}>
+        {active && <span className="block-spinner" />}
+        <span className="thinking-label">{active ? 'Thinking…' : 'Thought'}</span>
+        <span className="thinking-toggle">{expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && block.content && (
+        <div className="thinking-body">{block.content}</div>
+      )}
+    </div>
+  )
+}
+
+function ToolUseBlock({ block, streaming }) {
+  const active = streaming && !block.done
+  const parsedInput = (() => {
+    if (!block.inputJson) return null
+    try { return JSON.parse(block.inputJson) } catch { return null }
+  })()
+  const formatted = parsedInput !== null ? formatToolInput(block.name, parsedInput) : null
+  return (
+    <div className={`block-tool-use${active ? ' active' : ''}`}>
+      <div className="tool-header">
+        <span className="tool-icon">{toolIcon(block.name)}</span>
+        <span className="tool-name">{block.name}</span>
+        {active && <span className="block-spinner" />}
+      </div>
+      {formatted !== null && (
+        <pre className="tool-input">{formatted}</pre>
+      )}
+      {formatted === null && block.inputJson && (
+        <pre className="tool-input building">{block.inputJson}</pre>
+      )}
+    </div>
+  )
+}
+
+function TextBlock({ block, streaming }) {
+  const active = streaming && !block.done
+  const html = block.content ? marked.parse(block.content) : ''
+  return (
+    <div
+      className={`message-content${active ? ' streaming-cursor' : ''}`}
+      dangerouslySetInnerHTML={{ __html: html || (active ? '' : '') }}
+    />
+  )
+}
+
 function Message({ msg }) {
   const isUser = msg.role === 'user'
-  const html = msg.content ? marked.parse(msg.content) : ''
 
-  return (
-    <div className={`message ${msg.role}`}>
-      <div className="message-avatar">
-        {isUser ? 'U' : 'C'}
+  if (isUser) {
+    return (
+      <div className="message user">
+        <div className="message-avatar">U</div>
+        <div className="message-body">
+          <div className="message-role">You</div>
+          {msg.attachments?.length > 0 && (
+            <div className="message-attachments">
+              {msg.attachments.map(att => (
+                <div key={att.id} className="att-thumb">
+                  {att.type === 'image' && att.preview
+                    ? <img src={att.preview} alt={att.name} />
+                    : <span>{fileIcon(att)}</span>}
+                  <span>{att.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+        </div>
       </div>
+    )
+  }
+
+  const blocks = msg.blocks ?? []
+  return (
+    <div className="message assistant">
+      <div className="message-avatar">C</div>
       <div className="message-body">
-        <div className="message-role">{isUser ? 'You' : 'Claude'}</div>
-        {/* attachments shown above content for user messages */}
-        {isUser && msg.attachments?.length > 0 && (
-          <div className="message-attachments">
-            {msg.attachments.map(att => (
-              <div key={att.id} className="att-thumb">
-                {att.type === 'image' && att.preview
-                  ? <img src={att.preview} alt={att.name} />
-                  : <span>{fileIcon(att)}</span>}
-                <span>{att.name}</span>
-              </div>
-            ))}
-          </div>
+        <div className="message-role">Claude</div>
+        {msg.streaming && blocks.length === 0 && (
+          <div className="streaming-waiting"><span /><span /><span /></div>
         )}
-        {isUser ? (
-          /* user messages: plain text with whitespace preserved */
-          <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>
-            {msg.content}
-          </div>
-        ) : (
-          /* assistant messages: rendered markdown */
-          <div
-            className={`message-content${msg.streaming ? ' streaming-cursor' : ''}`}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        )}
-        {msg.cancelled && (
-          <div className="message-cancelled">Cancelled by user</div>
-        )}
-        {msg.error && (
-          <div className="message-error">⚠ {msg.error}</div>
-        )}
+        {blocks.map((block, i) => {
+          if (block.type === 'thinking') return <ThinkingBlock key={i} block={block} streaming={msg.streaming} />
+          if (block.type === 'tool_use') return <ToolUseBlock key={i} block={block} streaming={msg.streaming} />
+          if (block.type === 'text') return <TextBlock key={i} block={block} streaming={msg.streaming} />
+          return null
+        })}
+        {msg.cancelled && <div className="message-cancelled">Cancelled by user</div>}
+        {msg.error && <div className="message-error">⚠ {msg.error}</div>}
       </div>
     </div>
   )
