@@ -23,12 +23,23 @@ function loadTheme() {
   return localStorage.getItem('cc-chat-theme') || 'dark'
 }
 
+function loadDrafts() {
+  try { return JSON.parse(localStorage.getItem('cc-chat-drafts') || '{}') }
+  catch { return {} }
+}
+
+function saveDrafts(drafts) {
+  try { localStorage.setItem('cc-chat-drafts', JSON.stringify(drafts)) }
+  catch { /* quota exceeded — skip silently */ }
+}
+
 export default function App() {
   const [projects, setProjects] = useState(loadProjects)
   const [sessions, setSessions] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
   const [theme, setThemeState] = useState(loadTheme)
+  const [drafts, setDrafts] = useState(loadDrafts)
 
   // Apply theme to <html> and swap hljs stylesheet
   useEffect(() => {
@@ -60,6 +71,14 @@ export default function App() {
     setShowAdd(false)
   }, [])
 
+  const updateDraft = useCallback((projectId, draft) => {
+    setDrafts(prev => {
+      const next = { ...prev, [projectId]: draft }
+      saveDrafts(next)
+      return next
+    })
+  }, [])
+
   const removeProject = useCallback((projectId) => {
     setProjects(prev => {
       const next = prev.filter(p => p.id !== projectId)
@@ -70,6 +89,12 @@ export default function App() {
       const removed = new Set(prev.filter(s => s.projectId === projectId).map(s => s.id))
       const next = prev.filter(s => s.projectId !== projectId)
       setActiveId(cur => removed.has(cur) ? (next[next.length - 1]?.id ?? null) : cur)
+      return next
+    })
+    setDrafts(prev => {
+      const next = { ...prev }
+      delete next[projectId]
+      saveDrafts(next)
       return next
     })
   }, [])
@@ -137,6 +162,8 @@ export default function App() {
               key={activeSession.id}
               session={activeSession}
               onUpdate={(updater) => updateSession(activeSession.id, updater)}
+              draft={drafts[activeSession.projectId] ?? { text: '', attachments: [] }}
+              onDraftChange={(d) => updateDraft(activeSession.projectId, d)}
             />
           ) : (
             <div className="empty-state">

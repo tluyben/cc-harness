@@ -66,9 +66,9 @@ function readAsArrayBuffer(file) {
   })
 }
 
-export default function ChatSession({ session, onUpdate }) {
-  const [text, setText] = useState('')
-  const [pendingAttachments, setPendingAttachments] = useState([])
+export default function ChatSession({ session, onUpdate, draft, onDraftChange }) {
+  const [text, setText] = useState(draft.text)
+  const [pendingAttachments, setPendingAttachments] = useState(draft.attachments)
   const [dragging, setDragging] = useState(false)
   const textareaRef = useRef(null)
   const messageListRef = useRef(null)
@@ -97,6 +97,20 @@ export default function ChatSession({ session, onUpdate }) {
     if (inputAreaRef.current) ro.observe(inputAreaRef.current)
     return () => ro.disconnect()
   }, [])
+
+  // Persist draft (text + attachments) to parent on every change
+  useEffect(() => {
+    onDraftChange({ text, attachments: pendingAttachments })
+  }, [text, pendingAttachments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Restore textarea height when mounting with a saved draft
+  useEffect(() => {
+    const el = textareaRef.current
+    if (el && text) {
+      el.style.height = 'auto'
+      el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const scrollToBottom = useCallback((smooth = false) => {
     const el = messageListRef.current
