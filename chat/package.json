@@ -1,0 +1,24 @@
+{
+  "name": "cc-chat",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n harness,server,vite -c yellow,cyan,blue --kill-others-on-fail \"npm --prefix .. start\" \"node server.js\" \"vite build --watch\"",
+    "build": "vite build",
+    "start": "NODE_ENV=production node server.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "marked": "^12.0.0",
+    "marked-highlight": "^2.1.1",
+    "highlight.js": "^11.9.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "vite": "^5.0.8"
+  }
+}
