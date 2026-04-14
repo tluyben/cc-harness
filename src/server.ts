@@ -70,7 +70,8 @@ async function handlePrompt(req: Request): Promise<Response> {
         ) {
           ctrl.enqueue(sseEvent(line));
         }
-        ctrl.enqueue(sseEvent(JSON.stringify({ type: "done" })));
+        const outputFiles = await listOutputFiles();
+        ctrl.enqueue(sseEvent(JSON.stringify({ type: "done", files: outputFiles })));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         ctrl.enqueue(
@@ -95,6 +96,22 @@ async function handlePrompt(req: Request): Promise<Response> {
       "Access-Control-Allow-Origin": "*",
     },
   });
+}
+
+/** List files in $HOME/output/ — returns empty array if dir is absent/empty. */
+async function listOutputFiles(): Promise<string[]> {
+  const home = Deno.env.get("HOME");
+  if (!home) return [];
+  const outputDir = `${home}/output`;
+  try {
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(outputDir)) {
+      if (entry.isFile) names.push(entry.name);
+    }
+    return names.sort();
+  } catch {
+    return [];
+  }
 }
 
 function json400(message: string): Response {
