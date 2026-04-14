@@ -303,7 +303,7 @@ async function callTts(args: Args) {
       },
       body: JSON.stringify({
         model: ttsModel(),
-        modalities: ["audio"],
+        modalities: ["text", "audio"],
         audio: { voice, format: fmt },
         messages: [
           { role: "user", content: args.text as string },
