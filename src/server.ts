@@ -17,6 +17,7 @@
  */
 
 import { executeClause } from "./executor.ts";
+import { handleMcp } from "./mcp.ts";
 import { setupClaudeTools } from "./setup.ts";
 import type { PromptRequest } from "./types.ts";
 
@@ -108,6 +109,7 @@ function router(req: Request): Promise<Response> {
   const { pathname } = new URL(req.url);
 
   if (pathname === "/prompt") return handlePrompt(req);
+  if (pathname === "/mcp") return handleMcp(req);
 
   if (pathname === "/health" && req.method === "GET") {
     return Promise.resolve(

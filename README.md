@@ -158,6 +158,88 @@ SITEGULP_URL=https://hl2i6br8.vibecode.my \
 | `sitegulp` but `SITEGULP_API_KEY` missing | Fatal error, exit 1 |
 | `FORCE_CLAUDE_TOOLS=false` (or unset) | Feature skipped, no config changes |
 
+---
+
+### AI tools — STT, TTS, Vision (openwrapper backend)
+
+The harness exposes its own MCP server at `GET /mcp` (discovery) and
+`POST /mcp` (JSON-RPC 2.0). Three AI tools are available, each independently
+optional. All three call [openwrapper](../openwrapper), which proxies to
+OpenRouter.
+
+#### Shared prerequisites
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENWRAPPER_API_KEY` | yes (if any tool is set) | Client key issued by openwrapper (`POST /admin/keys`) |
+| `OPENWRAPPER_URL` | no | openwrapper base URL. Default: `http://127.0.0.1:8000` |
+
+#### Individual tools
+
+| Env var | MCP tool name | What it calls on openwrapper |
+|---------|---------------|------------------------------|
+| `CLAUDE_STT_TOOL=<model>` | `stt_transcribe` | `POST /v1/audio/transcriptions` |
+| `CLAUDE_TTS_TOOL=<model>` | `tts_speak` | `POST /v1/audio/speech` |
+| `CLAUDE_VISION_TOOL=<model>` | `vision_analyze` | `POST /v1/chat/completions` (with image) |
+
+Model values are OpenRouter model IDs, e.g.:
+- STT: `openai/whisper-1`
+- TTS: `openai/tts-1`
+- Vision: `openai/gpt-4o`
+
+Example:
+```bash
+FORCE_CLAUDE_TOOLS=true \
+OPENWRAPPER_API_KEY=sk-ow-... \
+CLAUDE_STT_TOOL=openai/whisper-1 \
+CLAUDE_VISION_TOOL=openai/gpt-4o \
+./dist/cc-harnass
+```
+
+When `FORCE_CLAUDE_TOOLS=true` the harness writes itself into
+`~/.claude/settings.json` as an MCP server:
+
+```json
+{
+  "mcpServers": {
+    "cc-harnass": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
+#### MCP tool details
+
+**`stt_transcribe`** — speech to text
+- `audio_path` (string) — absolute path to an audio file, **or**
+- `audio_base64` (string) — base64-encoded audio (no data-URL prefix)
+- `mime_type` (string, optional) — e.g. `audio/wav`, `audio/mpeg`. Default: `audio/wav`
+- `language` (string, optional) — BCP-47 code, e.g. `en`. Auto-detected if omitted.
+
+**`tts_speak`** — text to speech
+- `text` (string, **required**) — text to synthesize
+- `voice` (string, optional) — e.g. `alloy`, `echo`, `nova`. Default: `alloy`
+- `speed` (number, optional) — 0.25 – 4.0. Default: `1.0`
+- `response_format` (string, optional) — `mp3` | `opus` | `aac` | `flac` | `wav` | `pcm`. Default: `mp3`
+
+Returns base64-encoded audio as a data-URI resource.
+
+**`vision_analyze`** — image analysis
+- `prompt` (string, **required**) — what to analyze or ask about the image
+- `image_url` (string) — publicly accessible URL, **or**
+- `image_base64` (string) — base64-encoded image (no data-URL prefix)
+- `mime_type` (string, optional) — e.g. `image/png`, `image/jpeg`. Default: `image/png`
+
+#### Error cases (AI tools)
+
+| Situation | Behaviour |
+|-----------|-----------|
+| Tool model var set but `OPENWRAPPER_API_KEY` missing | Fatal error, exit 1 (when `FORCE_CLAUDE_TOOLS=true`) |
+| No tool model vars set | No-op — `/mcp` still served but returns empty tools list |
+| openwrapper unreachable at call time | Tool returns `isError: true` with message |
+
 ### Using rust-agent as the backend
 
 [rust-agent](../rust-agent) ships a `claudec` wrapper that is a compatible

@@ -40,6 +40,8 @@ export async function setupClaudeTools(): Promise<void> {
       await setupSitegulp();
     }
   }
+
+  await setupOpenwrapperTools();
 }
 
 // ─── playbig ──────────────────────────────────────────────────────────────────
@@ -113,6 +115,44 @@ async function setupSitegulp(): Promise<void> {
   });
 
   console.log(`  site tool     : sitegulp (MCP → ${mcpUrl})`);
+}
+
+// ─── openwrapper AI tools (STT / TTS / Vision) ───────────────────────────────
+
+async function setupOpenwrapperTools(): Promise<void> {
+  const sttModel = Deno.env.get("CLAUDE_STT_TOOL");
+  const ttsModel = Deno.env.get("CLAUDE_TTS_TOOL");
+  const visionModel = Deno.env.get("CLAUDE_VISION_TOOL");
+
+  if (!sttModel && !ttsModel && !visionModel) return;
+
+  const apiKey = Deno.env.get("OPENWRAPPER_API_KEY");
+  if (!apiKey) {
+    const which = [
+      sttModel && "CLAUDE_STT_TOOL",
+      ttsModel && "CLAUDE_TTS_TOOL",
+      visionModel && "CLAUDE_VISION_TOOL",
+    ].filter(Boolean).join(", ");
+    bail(
+      `${which} require${which.includes(",") ? "" : "s"} OPENWRAPPER_API_KEY to be set`,
+    );
+  }
+
+  const port = parseInt(Deno.env.get("PORT") ?? "8080", 10);
+  const mcpUrl = `http://127.0.0.1:${port}/mcp`;
+
+  await writeClaudeMcpServer("cc-harnass", {
+    type: "http",
+    url: mcpUrl,
+  });
+
+  const active = [
+    sttModel && `stt(${sttModel})`,
+    ttsModel && `tts(${ttsModel})`,
+    visionModel && `vision(${visionModel})`,
+  ].filter(Boolean).join(", ");
+  console.log(`  AI tools      : ${active}`);
+  console.log(`  AI MCP        : ${mcpUrl}`);
 }
 
 // ─── shared helpers ───────────────────────────────────────────────────────────
