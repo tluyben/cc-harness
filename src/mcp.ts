@@ -290,8 +290,8 @@ async function callTts(args: Args) {
     return fail(`TTS error (HTTP ${resp.status}): ${await resp.text()}`);
   }
 
-  // Fallback: use chat completions with audio modality
-  // (OpenRouter route for gpt-audio-mini and similar models).
+  // Fallback: use chat completions with audio modality + streaming
+  // (OpenRouter requires stream:true for audio output).
   await resp.body?.cancel();
   let resp2: Response;
   try {
@@ -308,6 +308,7 @@ async function callTts(args: Args) {
         messages: [
           { role: "user", content: args.text as string },
         ],
+        stream: true,
       }),
     });
   } catch (err) {
@@ -316,32 +317,56 @@ async function callTts(args: Args) {
     );
   }
 
-  const body2 = await resp2.text();
-  if (!resp2.ok) return fail(`TTS error (HTTP ${resp2.status}): ${body2}`);
-
-  try {
-    const json = JSON.parse(body2);
-    const audioData = json.choices?.[0]?.message?.audio?.data as string | undefined;
-    if (!audioData) {
-      // Some models return text transcript instead of audio — pass it through.
-      const textContent = json.choices?.[0]?.message?.content;
-      return ok(typeof textContent === "string" ? textContent : JSON.stringify(json));
-    }
-    return {
-      content: [
-        {
-          type: "resource",
-          resource: {
-            uri: `data:${mimeType};base64,${audioData}`,
-            mimeType,
-            blob: audioData,
-          },
-        },
-      ],
-    };
-  } catch {
-    return fail(`TTS: unexpected response format: ${body2.slice(0, 200)}`);
+  if (!resp2.ok) {
+    return fail(`TTS error (HTTP ${resp2.status}): ${await resp2.text()}`);
   }
+
+  // Accumulate base64 audio chunks from the SSE stream.
+  const audioChunks: string[] = [];
+  let textContent = "";
+  const reader = resp2.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(data);
+          const delta = chunk.choices?.[0]?.delta;
+          if (delta?.audio?.data) audioChunks.push(delta.audio.data as string);
+          if (typeof delta?.content === "string") textContent += delta.content;
+        } catch { /* malformed chunk — skip */ }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+
+  const audioData = audioChunks.join("");
+  if (!audioData) {
+    // Model returned text instead of audio — pass it through.
+    return ok(textContent || "TTS: no audio in response");
+  }
+  return {
+    content: [
+      {
+        type: "resource",
+        resource: {
+          uri: `data:${mimeType};base64,${audioData}`,
+          mimeType,
+          blob: audioData,
+        },
+      },
+    ],
+  };
 }
 
 async function callVision(args: Args) {
