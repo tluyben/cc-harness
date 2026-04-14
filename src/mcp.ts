@@ -286,13 +286,16 @@ async function callTts(args: Args) {
     };
   }
 
+  // Not a simple 404 — real error from the speech endpoint.
   if (resp.status !== 404) {
-    return fail(`TTS error (HTTP ${resp.status}): ${await resp.text()}`);
+    const errBody = await resp.text().catch(() => "");
+    return fail(`TTS error (HTTP ${resp.status}): ${errBody}`);
   }
+  await resp.body?.cancel().catch(() => {});
 
-  // Fallback: use chat completions with audio modality + streaming
-  // (OpenRouter requires stream:true for audio output).
-  await resp.body?.cancel();
+  // Fallback: use chat completions with audio modality + streaming.
+  // OpenRouter requires stream:true for audio output, and only pcm16 is
+  // supported as the streaming audio format (mp3/opus etc. are rejected).
   let resp2: Response;
   try {
     resp2 = await fetch(`${owBase()}/v1/chat/completions`, {
@@ -304,64 +307,73 @@ async function callTts(args: Args) {
       body: JSON.stringify({
         model: ttsModel(),
         modalities: ["text", "audio"],
-        audio: { voice, format: fmt },
+        audio: { voice, format: "pcm16" },
         messages: [
           { role: "user", content: args.text as string },
         ],
         stream: true,
       }),
+      signal: AbortSignal.timeout(90_000),
     });
   } catch (err) {
     return fail(
-      `Cannot reach openwrapper (TTS fallback): ${err instanceof Error ? err.message : err}`,
+      `TTS fallback failed: ${err instanceof Error ? err.message : err}`,
     );
   }
 
   if (!resp2.ok) {
-    return fail(`TTS error (HTTP ${resp2.status}): ${await resp2.text()}`);
+    const errBody = await resp2.text().catch(() => "");
+    return fail(`TTS error (HTTP ${resp2.status}): ${errBody}`);
   }
 
-  // Accumulate base64 audio chunks from the SSE stream.
+  // Accumulate base64 PCM16 audio chunks from the SSE stream.
   const audioChunks: string[] = [];
   let textContent = "";
   const reader = resp2.body!.getReader();
   const decoder = new TextDecoder();
-  let buf = "";
+  let lineBuf = "";
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
+    outer: while (true) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch {
+        break;
+      }
+      if (chunk.done) break;
+      lineBuf += decoder.decode(chunk.value, { stream: true });
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") continue;
+        const raw = line.slice(5).trim();
+        if (raw === "[DONE]") { break outer; }
         try {
-          const chunk = JSON.parse(data);
-          const delta = chunk.choices?.[0]?.delta;
+          const evt = JSON.parse(raw);
+          const delta = evt.choices?.[0]?.delta;
           if (delta?.audio?.data) audioChunks.push(delta.audio.data as string);
           if (typeof delta?.content === "string") textContent += delta.content;
         } catch { /* malformed chunk — skip */ }
       }
     }
   } finally {
-    reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 
   const audioData = audioChunks.join("");
   if (!audioData) {
-    // Model returned text instead of audio — pass it through.
+    // Model returned text instead of audio.
     return ok(textContent || "TTS: no audio in response");
   }
+  // Return as PCM16 data-URI (the only format OpenRouter streams support).
+  const pcmMime = "audio/pcm";
   return {
     content: [
       {
         type: "resource",
         resource: {
-          uri: `data:${mimeType};base64,${audioData}`,
-          mimeType,
+          uri: `data:${pcmMime};base64,${audioData}`,
+          mimeType: pcmMime,
           blob: audioData,
         },
       },
