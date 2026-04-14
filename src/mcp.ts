@@ -365,20 +365,29 @@ async function callTts(args: Args) {
     // Model returned text instead of audio.
     return ok(textContent || "TTS: no audio in response");
   }
-  // Return as PCM16 data-URI (the only format OpenRouter streams support).
-  const pcmMime = "audio/pcm";
-  return {
-    content: [
-      {
-        type: "resource",
-        resource: {
-          uri: `data:${pcmMime};base64,${audioData}`,
-          mimeType: pcmMime,
-          blob: audioData,
-        },
-      },
-    ],
-  };
+
+  // Decode base64 PCM16 and write to a temp file so the caller can reference it
+  // by path. Returning 250KB+ of base64 inline in an MCP response is unwieldy.
+  const tmpPath = `/tmp/tts-${Date.now()}.raw`;
+  try {
+    const binStr = atob(audioData);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+    await Deno.writeFile(tmpPath, bytes);
+  } catch (err) {
+    // Fall back to inline data-URI if write fails.
+    return ok(
+      `TTS audio ready as data URI (audio/pcm;base64). ` +
+        `File write failed: ${err instanceof Error ? err.message : err}. ` +
+        `Data: data:audio/pcm;base64,${audioData.slice(0, 40)}... (${audioData.length} chars total)`,
+    );
+  }
+
+  return ok(
+    `TTS audio saved to ${tmpPath} (PCM16, 24 kHz, mono, 16-bit). ` +
+      `Size: ${(audioData.length * 3 / 4).toFixed(0)} bytes approx. ` +
+      `To use with stt_transcribe, pass audio_path="${tmpPath}" and mime_type="audio/pcm".`,
+  );
 }
 
 async function callVision(args: Args) {
