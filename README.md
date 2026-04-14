@@ -59,14 +59,104 @@ Returns `{"status":"ok"}` — useful for readiness probes.
 
 ## Configuration
 
-| Variable     | Default   | Description                          |
-|--------------|-----------|--------------------------------------|
-| `PORT`       | `8080`    | TCP port the server listens on       |
-| `CLAUDE_PATH`| `claude`  | Path to the Claude CLI binary        |
+### Core variables
+
+| Variable      | Default   | Description                          |
+|---------------|-----------|--------------------------------------|
+| `PORT`        | `8080`    | TCP port the server listens on       |
+| `CLAUDE_PATH` | `claude`  | Path to the Claude CLI binary        |
 
 ```bash
 PORT=3000 CLAUDE_PATH=/opt/claude/bin/claude ./dist/cc-harnass
 ```
+
+Copy `.env.example` to `.env` and fill in the values you need.
+
+---
+
+### Site-crawling tool integration (optional)
+
+Setting `FORCE_CLAUDE_TOOLS=true` tells the harness to automatically write an
+MCP server entry into `~/.claude/settings.json` before accepting any requests,
+so that Claude Code can use a site-crawling/browser tool out of the box.
+
+The harness **exits with a clear error** if any required variable is missing or
+if the expected service is unreachable — nothing is configured half-way.
+
+#### `CLAUDE_SITE_TOOL=playbig`
+
+Registers the local [playbig](../playbig) Playwright/Chromium browser service
+as an MCP server.
+
+**Prerequisites:**
+- `PLAYBIG_API_KEY` — a valid access key (obtain via `POST /admin/keys` on the
+  playbig service; requires `ADMIN_SECRET` to be set there).
+- playbig running and healthy on `http://127.0.0.1:10001` before the harness
+  starts.
+
+What gets written to `~/.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "playbig": {
+      "type": "http",
+      "url": "http://127.0.0.1:10001/mcp",
+      "headers": { "Authorization": "Bearer <PLAYBIG_API_KEY>" }
+    }
+  }
+}
+```
+
+Example:
+```bash
+FORCE_CLAUDE_TOOLS=true \
+CLAUDE_SITE_TOOL=playbig \
+PLAYBIG_API_KEY=my-key \
+./dist/cc-harnass
+```
+
+#### `CLAUDE_SITE_TOOL=sitegulp`
+
+Registers the remote sitegulp site-crawling MCP service.
+
+**Prerequisites:**
+- `SITEGULP_API_KEY` — API key for the sitegulp service.
+- `SITEGULP_URL` (optional) — base URL of the service.  
+  Default: `https://hl2i6br8.vibecode.my`  
+  The MCP endpoint is `${SITEGULP_URL}/docs/mcp`.
+
+What gets written to `~/.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "sitegulp": {
+      "type": "http",
+      "url": "https://hl2i6br8.vibecode.my/docs/mcp",
+      "headers": { "Authorization": "Bearer <SITEGULP_API_KEY>" }
+    }
+  }
+}
+```
+
+Example:
+```bash
+FORCE_CLAUDE_TOOLS=true \
+CLAUDE_SITE_TOOL=sitegulp \
+SITEGULP_API_KEY=my-key \
+SITEGULP_URL=https://hl2i6br8.vibecode.my \
+./dist/cc-harnass
+```
+
+#### Error cases
+
+| Situation | Behaviour |
+|-----------|-----------|
+| `FORCE_CLAUDE_TOOLS=true` but `CLAUDE_SITE_TOOL` not set | No-op — other tools may still be configured |
+| `CLAUDE_SITE_TOOL` set to unknown value | Fatal error, exit 1 |
+| `playbig` but `PLAYBIG_API_KEY` missing | Fatal error, exit 1 |
+| `playbig` but `127.0.0.1:10001` not responding | Fatal error, exit 1 |
+| `sitegulp` but `SITEGULP_API_KEY` missing | Fatal error, exit 1 |
+| `FORCE_CLAUDE_TOOLS=false` (or unset) | Feature skipped, no config changes |
 
 ### Using rust-agent as the backend
 

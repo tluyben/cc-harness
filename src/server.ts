@@ -17,6 +17,7 @@
  */
 
 import { executeClause } from "./executor.ts";
+import { setupClaudeTools } from "./setup.ts";
 import type { PromptRequest } from "./types.ts";
 
 const enc = new TextEncoder();
@@ -128,6 +129,8 @@ export function startServer(port: number): Deno.HttpServer {
 // ---------- entry point ----------
 if (import.meta.main) {
   const PORT = parseInt(Deno.env.get("PORT") ?? "8080", 10);
+  // Run optional Claude tool setup before accepting requests.
+  await setupClaudeTools();
   console.log(`cc-harnass listening on http://localhost:${PORT}`);
   console.log(`  claude binary : ${Deno.env.get("CLAUDE_PATH") ?? "claude"}`);
   startServer(PORT);
