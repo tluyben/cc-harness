@@ -20,7 +20,7 @@
  */
 
 const HOME = Deno.env.get("HOME") ?? "";
-const CLAUDE_SETTINGS_PATH = `${HOME}/.claude/settings.json`;
+const CLAUDE_SETTINGS_PATH = `${HOME}/.claude.json`;
 
 /** Entry point — call once at server startup. */
 export async function setupClaudeTools(): Promise<void> {
