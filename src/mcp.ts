@@ -232,9 +232,21 @@ async function callStt(args: Args) {
 
 async function callTts(args: Args) {
   const voice = args.voice ?? "alloy";
-  const speed = args.speed ?? 1.0;
   const fmt = args.response_format ?? "mp3";
 
+  const mimeMap: Record<string, string> = {
+    mp3: "audio/mpeg",
+    opus: "audio/ogg; codecs=opus",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    wav: "audio/wav",
+    pcm: "audio/pcm",
+  };
+  const mimeType = mimeMap[fmt] ?? "audio/mpeg";
+
+  // First try the dedicated /v1/audio/speech endpoint (OpenAI-compatible TTS).
+  // If that returns 404, fall back to chat completions with audio output
+  // (used by OpenRouter for models like openai/gpt-audio-mini).
   let resp: Response;
   try {
     resp = await fetch(`${owBase()}/v1/audio/speech`, {
@@ -247,7 +259,6 @@ async function callTts(args: Args) {
         model: ttsModel(),
         input: args.text as string,
         voice,
-        speed,
         response_format: fmt,
       }),
     });
@@ -257,35 +268,80 @@ async function callTts(args: Args) {
     );
   }
 
-  if (!resp.ok) {
+  if (resp.ok) {
+    // Dedicated TTS endpoint returned audio bytes directly.
+    const buf = await resp.arrayBuffer();
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    return {
+      content: [
+        {
+          type: "resource",
+          resource: {
+            uri: `data:${mimeType};base64,${b64}`,
+            mimeType,
+            blob: b64,
+          },
+        },
+      ],
+    };
+  }
+
+  if (resp.status !== 404) {
     return fail(`TTS error (HTTP ${resp.status}): ${await resp.text()}`);
   }
 
-  const buf = await resp.arrayBuffer();
-  const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-  const mimeMap: Record<string, string> = {
-    mp3: "audio/mpeg",
-    opus: "audio/ogg; codecs=opus",
-    aac: "audio/aac",
-    flac: "audio/flac",
-    wav: "audio/wav",
-    pcm: "audio/pcm",
-  };
-  const mimeType = mimeMap[fmt] ?? "audio/mpeg";
-
-  // Return as a data-URI resource so clients that support it can play/save it.
-  return {
-    content: [
-      {
-        type: "resource",
-        resource: {
-          uri: `data:${mimeType};base64,${b64}`,
-          mimeType,
-          blob: b64,
-        },
+  // Fallback: use chat completions with audio modality
+  // (OpenRouter route for gpt-audio-mini and similar models).
+  await resp.body?.cancel();
+  let resp2: Response;
+  try {
+    resp2 = await fetch(`${owBase()}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${owKey()}`,
+        "Content-Type": "application/json",
       },
-    ],
-  };
+      body: JSON.stringify({
+        model: ttsModel(),
+        modalities: ["audio"],
+        audio: { voice, format: fmt },
+        messages: [
+          { role: "user", content: args.text as string },
+        ],
+      }),
+    });
+  } catch (err) {
+    return fail(
+      `Cannot reach openwrapper (TTS fallback): ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  const body2 = await resp2.text();
+  if (!resp2.ok) return fail(`TTS error (HTTP ${resp2.status}): ${body2}`);
+
+  try {
+    const json = JSON.parse(body2);
+    const audioData = json.choices?.[0]?.message?.audio?.data as string | undefined;
+    if (!audioData) {
+      // Some models return text transcript instead of audio — pass it through.
+      const textContent = json.choices?.[0]?.message?.content;
+      return ok(typeof textContent === "string" ? textContent : JSON.stringify(json));
+    }
+    return {
+      content: [
+        {
+          type: "resource",
+          resource: {
+            uri: `data:${mimeType};base64,${audioData}`,
+            mimeType,
+            blob: audioData,
+          },
+        },
+      ],
+    };
+  } catch {
+    return fail(`TTS: unexpected response format: ${body2.slice(0, 200)}`);
+  }
 }
 
 async function callVision(args: Args) {
