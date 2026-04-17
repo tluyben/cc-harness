@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HARNESS_URL="${HARNESS_URL:-http://localhost:8080}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Extract -p and -c flags, ignore everything else
+prompt=""
+continue_flag=false
+args=("$@")
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+    arg="${args[$i]}"
+    if [[ "$arg" == "-p" ]]; then
+        i=$((i + 1))
+        prompt="${args[$i]:-}"
+    elif [[ "$arg" == -p* ]]; then
+        prompt="${arg#-p}"
+    elif [[ "$arg" == "-c" ]]; then
+        continue_flag=true
+    fi
+    i=$((i + 1))
+done
+
+if [[ -z "$prompt" ]]; then
+    echo '{"type":"error","error":{"message":"Usage: claudep -p <prompt>"}}' >&2
+    exit 1
+fi
+
+# Start harness if not running
+if ! curl -sf "${HARNESS_URL}/health" > /dev/null 2>&1; then
+    echo '{"type":"system","subtype":"starting_harness"}' >&2
+    (cd "$SCRIPT_DIR" && nohup npm start > /tmp/cc-harness.log 2>&1 &)
+    tries=0
+    until curl -sf "${HARNESS_URL}/health" > /dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [[ $tries -gt 30 ]]; then
+            echo '{"type":"error","error":{"message":"Harness failed to start — check /tmp/cc-harness.log"}}' >&2
+            exit 1
+        fi
+        sleep 1
+    done
+fi
+
+# Build JSON payload safely
+payload=$(python3 -c "
+import json, sys
+d = {'prompt': sys.argv[1], 'dir': sys.argv[2]}
+if sys.argv[3] == 'true':
+    d['continue'] = True
+print(json.dumps(d))
+" "$prompt" "$(pwd)" "$continue_flag")
+
+# Stream SSE, emit one JSON object per line
+curl -sf -N \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "${HARNESS_URL}/prompt" | \
+while IFS= read -r line; do
+    if [[ "$line" == "data: "* ]]; then
+        printf '%s\n' "${line#data: }"
+    fi
+done
