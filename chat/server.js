@@ -106,7 +106,7 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'))
 })
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  chat server  →  http://localhost:${PORT}`)
   console.log(`  harness      →  ${HARNESS_URL}\n`)
 })

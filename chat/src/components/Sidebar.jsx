@@ -1,6 +1,6 @@
-export default function Sidebar({ projects, sessions, theme, onOpenProject, onRemoveProject, onAddProject, onToggleTheme }) {
+export default function Sidebar({ projects, sessions, theme, isOpen, onOpenProject, onRemoveProject, onAddProject, onToggleTheme }) {
   return (
-    <div className="sidebar">
+    <div className={`sidebar${isOpen ? ' open' : ''}`}>
       <div className="sidebar-header">
         <h2>Projects</h2>
         <button

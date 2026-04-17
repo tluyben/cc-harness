@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import TabBar from './components/TabBar.jsx'
 import ChatSession from './components/ChatSession.jsx'
@@ -40,6 +40,7 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false)
   const [theme, setThemeState] = useState(loadTheme)
   const [drafts, setDrafts] = useState(loadDrafts)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Apply theme to <html> and swap hljs stylesheet
   useEffect(() => {
@@ -140,11 +141,13 @@ export default function App() {
 
   return (
     <div className="app">
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
       <Sidebar
         projects={projects}
         sessions={sessions}
         theme={theme}
-        onOpenProject={openProject}
+        isOpen={sidebarOpen}
+        onOpenProject={(p) => { openProject(p); setSidebarOpen(false) }}
         onRemoveProject={removeProject}
         onAddProject={() => setShowAdd(true)}
         onToggleTheme={toggleTheme}
@@ -155,6 +158,7 @@ export default function App() {
           activeId={activeId}
           onSelect={setActiveId}
           onClose={closeSession}
+          onMenuOpen={() => setSidebarOpen(true)}
         />
         <div className="chat-area" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {activeSession ? (

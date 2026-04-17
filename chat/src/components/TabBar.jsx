@@ -1,10 +1,15 @@
-export default function TabBar({ sessions, activeId, onSelect, onClose }) {
+export default function TabBar({ sessions, activeId, onSelect, onClose, onMenuOpen }) {
   if (sessions.length === 0) {
-    return <div className="tab-bar" style={{ minHeight: 35 }} />
+    return (
+      <div className="tab-bar" style={{ minHeight: 35 }}>
+        <button className="btn-hamburger" onClick={onMenuOpen} title="Open sidebar">☰</button>
+      </div>
+    )
   }
 
   return (
     <div className="tab-bar">
+      <button className="btn-hamburger" onClick={onMenuOpen} title="Open sidebar">☰</button>
       {sessions.map(session => (
         <div
           key={session.id}
