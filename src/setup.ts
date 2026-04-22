@@ -13,7 +13,7 @@
  *
  *   CLAUDE_SITE_TOOL=sitegulp
  *     – Registers the remote sitegulp MCP server.
- *     – Requires: SITEGULP_API_KEY, SITEGULP_URL (default https://hl2i6br8.vibecode.my).
+ *     – Requires: SITEGULP_API_KEY, SITEGULP_URL (default https://sitegulp.com).
  *
  * The function bails (process.exit 1) with a clear message if any required
  * variable is missing or if the expected service is unreachable.
@@ -105,7 +105,7 @@ async function setupSitegulp(): Promise<void> {
   }
 
   const baseUrl = Deno.env.get("SITEGULP_URL") ??
-    "https://hl2i6br8.vibecode.my";
+    "https://sitegulp.com";
   const mcpUrl = `${baseUrl.replace(/\/$/, "")}/docs/mcp`;
 
   await writeClaudeMcpServer("sitegulp", {

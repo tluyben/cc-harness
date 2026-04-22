@@ -122,7 +122,7 @@ Registers the remote sitegulp site-crawling MCP service.
 **Prerequisites:**
 - `SITEGULP_API_KEY` — API key for the sitegulp service.
 - `SITEGULP_URL` (optional) — base URL of the service.  
-  Default: `https://hl2i6br8.vibecode.my`  
+  Default: `https://sitegulp.com`  
   The MCP endpoint is `${SITEGULP_URL}/docs/mcp`.
 
 What gets written to `~/.claude/settings.json`:
@@ -131,7 +131,7 @@ What gets written to `~/.claude/settings.json`:
   "mcpServers": {
     "sitegulp": {
       "type": "http",
-      "url": "https://hl2i6br8.vibecode.my/docs/mcp",
+      "url": "https://sitegulp.com/docs/mcp",
       "headers": { "Authorization": "Bearer <SITEGULP_API_KEY>" }
     }
   }
@@ -143,7 +143,7 @@ Example:
 FORCE_CLAUDE_TOOLS=true \
 CLAUDE_SITE_TOOL=sitegulp \
 SITEGULP_API_KEY=my-key \
-SITEGULP_URL=https://hl2i6br8.vibecode.my \
+SITEGULP_URL=https://sitegulp.com \
 ./dist/cc-harnass
 ```
 
