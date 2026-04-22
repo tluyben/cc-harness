@@ -240,6 +240,56 @@ Returns base64-encoded audio as a data-URI resource.
 | No tool model vars set | No-op — `/mcp` still served but returns empty tools list |
 | openwrapper unreachable at call time | Tool returns `isError: true` with message |
 
+### nsjail process sandbox (claudep)
+
+`claudep` can run each `claude` invocation inside [nsjail](https://github.com/google/nsjail), giving each call an isolated filesystem view and a fresh home directory. This prevents runaway tools from touching files outside the project, reading other users' credentials, or persisting changes to `~/.claude` between sessions.
+
+**Enable it:**
+
+```bash
+ENABLE_NSJAIL=true claudep -p "your prompt"
+```
+
+Or set it persistently in `.env`:
+
+```ini
+ENABLE_NSJAIL=true
+```
+
+**What happens on first use:**
+
+`claudep` will automatically:
+
+1. Clone `google/nsjail` into `./3rdparty/nsjail`
+2. Build the `nsjail` binary (`make -j$(nproc)`)
+3. Run future `claude` calls through `scripts/nsjail-wrapper`
+
+Build dependencies (Debian/Ubuntu):
+
+```bash
+sudo apt-get install bison flex libprotobuf-dev protobuf-compiler \
+     libnl-3-dev libnl-route-3-dev pkg-config libcap-dev
+```
+
+**Sandbox model:**
+
+| Resource | Access |
+|----------|--------|
+| Host root (`/`) | Read-only bind |
+| `/tmp` | Isolated tmpfs (host `/tmp` not visible) |
+| Work directory (`$PWD`) | Read-write bind |
+| `$HOME` | Per-invocation copy in `/tmp/claude-sandbox-*`, deleted on exit |
+| Network | Host namespace (API calls reach Anthropic / openwrapper) |
+| Credentials | Copied into sandbox home on startup (when not using openwrapper) |
+
+Only `HOME`, `USER`, `PATH`, `TERM`, `LANG`, `ANTHROPIC_*`, and `CLAUDE_*` env vars are forwarded; everything else is stripped.
+
+**Combining with openwrapper:**
+
+When `OPENWRAPPER_AUTO=true` and `ENABLE_NSJAIL=true`, credentials are **not** copied into the sandbox — all API traffic is routed through openwrapper so the sandboxed `claude` never needs to read `~/.claude/.credentials.json`.
+
+---
+
 ### Using rust-agent as the backend
 
 [rust-agent](../rust-agent) ships a `claudec` wrapper that is a compatible

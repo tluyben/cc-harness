@@ -4,7 +4,21 @@ set -euo pipefail
 HARNESS_URL="${HARNESS_URL:-http://localhost:8080}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Extract -p and -c flags, ignore everything else
+# Load .env
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  set -a; source "$SCRIPT_DIR/.env"; set +a
+fi
+
+HARNESS_PORT="${PORT:-8080}"
+OPENWRAPPER_AUTO="${OPENWRAPPER_AUTO:-false}"
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+OW_PORT="${OPENWRAPPER_PORT:-8000}"
+DENO_BIN="${DENO_BIN:-$HOME/.deno/bin/deno}"
+OW_STATE_FILE="/tmp/cc-openwrapper-${OW_PORT}.env"
+OW_LOG="/tmp/cc-openwrapper-${OW_PORT}.log"
+HARNESS_HASH_FILE="/tmp/cc-harness-config.hash"
+
+# ── Arg parsing ───────────────────────────────────────────────────────────────
 prompt=""
 continue_flag=false
 args=("$@")
@@ -27,22 +41,145 @@ if [[ -z "$prompt" ]]; then
     exit 1
 fi
 
-# Start harness if not running
-if ! curl -sf "${HARNESS_URL}/health" > /dev/null 2>&1; then
-    echo '{"type":"system","subtype":"starting_harness"}' >&2
-    (cd "$SCRIPT_DIR" && nohup npm start > /tmp/cc-harness.log 2>&1 &)
+# ── openwrapper auto-start ────────────────────────────────────────────────────
+if [[ "$OPENWRAPPER_AUTO" == "true" ]] && [[ -n "$OPENROUTER_API_KEY" ]]; then
+  OW_DIR="$SCRIPT_DIR/3rdparty/openwrapper"
+
+  if [[ ! -d "$OW_DIR/.git" ]]; then
+    echo '{"type":"system","subtype":"cloning_openwrapper"}' >&2
+    mkdir -p "$SCRIPT_DIR/3rdparty"
+    git clone https://github.com/tluyben/openwrapper.git "$OW_DIR" >&2
+  fi
+
+  # Load saved state (admin secret + client key from prior run)
+  OW_ADMIN_SECRET="${OPENWRAPPER_ADMIN_SECRET:-}"
+  OW_CLIENT_KEY=""
+  if [[ -f "$OW_STATE_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$OW_STATE_FILE"
+  fi
+
+  if ! curl -sf "http://localhost:${OW_PORT}/health" >/dev/null 2>&1; then
+    echo '{"type":"system","subtype":"starting_openwrapper"}' >&2
+    [[ -z "$OW_ADMIN_SECRET" ]] && OW_ADMIN_SECRET="$(openssl rand -hex 16)"
+
+    OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+    ADMIN_SECRET="$OW_ADMIN_SECRET" \
+    PORT="$OW_PORT" \
+    DB_PATH="$OW_DIR/content.db" \
+    "$DENO_BIN" run \
+      --allow-net --allow-read --allow-write --allow-env --allow-ffi \
+      "$OW_DIR/main.ts" > "$OW_LOG" 2>&1 &
+
     tries=0
-    until curl -sf "${HARNESS_URL}/health" > /dev/null 2>&1; do
-        tries=$((tries + 1))
-        if [[ $tries -gt 30 ]]; then
-            echo '{"type":"error","error":{"message":"Harness failed to start — check /tmp/cc-harness.log"}}' >&2
-            exit 1
-        fi
-        sleep 1
+    until curl -sf "http://localhost:${OW_PORT}/health" >/dev/null 2>&1; do
+      tries=$((tries + 1))
+      if [[ $tries -gt 50 ]]; then
+        echo '{"type":"error","error":{"message":"openwrapper failed to start — check '"$OW_LOG"'"}}' >&2
+        exit 1
+      fi
+      sleep 0.2
     done
+
+    OW_CLIENT_KEY=""  # force new key after fresh start
+  fi
+
+  # Issue client key if we do not have one
+  if [[ -z "$OW_CLIENT_KEY" ]]; then
+    KEY_JSON=$(curl -sf -X POST "http://localhost:${OW_PORT}/admin/keys" \
+      -H "x-admin-secret: $OW_ADMIN_SECRET" \
+      -H "content-type: application/json" \
+      -d '{"name":"cc-harnass"}')
+    OW_CLIENT_KEY=$(echo "$KEY_JSON" | jq -r '.key')
+    printf 'OW_ADMIN_SECRET=%s\nOW_CLIENT_KEY=%s\n' \
+      "$OW_ADMIN_SECRET" "$OW_CLIENT_KEY" > "$OW_STATE_FILE"
+  fi
+
+  export ANTHROPIC_BASE_URL="http://localhost:${OW_PORT}"
+  export ANTHROPIC_API_KEY=""
+  export ANTHROPIC_AUTH_TOKEN="$OW_CLIENT_KEY"
 fi
 
-# Build JSON payload safely
+# ── Model overrides (work with or without openwrapper) ────────────────────────
+[[ -n "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ]]   && export ANTHROPIC_DEFAULT_OPUS_MODEL
+[[ -n "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ]] && export ANTHROPIC_DEFAULT_SONNET_MODEL
+[[ -n "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ]]  && export ANTHROPIC_DEFAULT_HAIKU_MODEL
+
+# ── nsjail sandbox ────────────────────────────────────────────────────────────
+ENABLE_NSJAIL="${ENABLE_NSJAIL:-false}"
+
+if [[ "$ENABLE_NSJAIL" == "true" ]]; then
+  NSJAIL_DIR="$SCRIPT_DIR/3rdparty/nsjail"
+  NSJAIL_BIN_PATH="$NSJAIL_DIR/nsjail"
+
+  if [[ ! -d "$NSJAIL_DIR/.git" ]]; then
+    echo '{"type":"system","subtype":"cloning_nsjail"}' >&2
+    mkdir -p "$SCRIPT_DIR/3rdparty"
+    git clone --depth=1 https://github.com/google/nsjail.git "$NSJAIL_DIR" >&2
+  fi
+
+  if [[ ! -x "$NSJAIL_BIN_PATH" ]]; then
+    echo '{"type":"system","subtype":"building_nsjail"}' >&2
+    if ! make -C "$NSJAIL_DIR" -j"$(nproc)" >&2 2>/tmp/cc-nsjail-build.log; then
+      echo '{"type":"error","error":{"message":"nsjail build failed — install deps: bison flex libprotobuf-dev protobuf-compiler libnl-3-dev libnl-route-3-dev pkg-config libcap-dev — see /tmp/cc-nsjail-build.log"}}' >&2
+      exit 1
+    fi
+  fi
+
+  # The wrapper reads these from its env (harness passes Deno.env.toObject())
+  export NSJAIL_BIN="$NSJAIL_BIN_PATH"
+  export REAL_CLAUDE_BIN="${CLAUDE_PATH:-$(command -v claude)}"
+  export NSJAIL_OPENWRAPPER_ACTIVE="$OPENWRAPPER_AUTO"
+  export CLAUDE_PATH="$SCRIPT_DIR/scripts/nsjail-wrapper"
+fi
+
+# ── Harness: start or restart if config changed ───────────────────────────────
+desired_hash=$(printf '%s\n' \
+  "${ANTHROPIC_BASE_URL:-}" \
+  "${ANTHROPIC_AUTH_TOKEN:-}" \
+  "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" \
+  "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" \
+  "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" \
+  "${CLAUDE_PATH:-}" \
+  | md5sum | cut -d' ' -f1)
+
+harness_running=false
+if curl -sf "${HARNESS_URL}/health" > /dev/null 2>&1; then
+  harness_running=true
+fi
+
+if $harness_running; then
+  stored_hash=""
+  [[ -f "$HARNESS_HASH_FILE" ]] && stored_hash=$(cat "$HARNESS_HASH_FILE")
+  if [[ "$desired_hash" != "$stored_hash" ]]; then
+    echo '{"type":"system","subtype":"restarting_harness"}' >&2
+    harness_pid=$(lsof -ti ":$HARNESS_PORT" 2>/dev/null || true)
+    if [[ -n "$harness_pid" ]]; then
+      kill "$harness_pid" 2>/dev/null || true
+      sleep 1
+    fi
+    harness_running=false
+  fi
+fi
+
+if ! $harness_running; then
+  echo '{"type":"system","subtype":"starting_harness"}' >&2
+  pushd "$SCRIPT_DIR" >/dev/null
+  nohup npm start > /tmp/cc-harness.log 2>&1 &
+  popd >/dev/null
+  echo "$desired_hash" > "$HARNESS_HASH_FILE"
+  tries=0
+  until curl -sf "${HARNESS_URL}/health" > /dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [[ $tries -gt 30 ]]; then
+      echo '{"type":"error","error":{"message":"Harness failed to start — check /tmp/cc-harness.log"}}' >&2
+      exit 1
+    fi
+    sleep 1
+  done
+fi
+
+# ── Build payload and stream SSE ──────────────────────────────────────────────
 payload=$(python3 -c "
 import json, sys
 d = {'prompt': sys.argv[1], 'dir': sys.argv[2]}
@@ -51,7 +188,6 @@ if sys.argv[3] == 'true':
 print(json.dumps(d))
 " "$prompt" "$(pwd)" "$continue_flag")
 
-# Stream SSE, emit one JSON object per line
 curl -sf -N \
     -H "Content-Type: application/json" \
     -d "$payload" \

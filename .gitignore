@@ -1,6 +1,9 @@
 # Build output
 dist/
 
+# Third-party auto-cloned dependencies
+3rdparty/
+
 # Deno cache
 .deno/
 

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Runs claude inside nsjail.  Set by claudep — do not invoke directly.
+#
+# Required env vars (set by claudep, passed through by the harness):
+#   NSJAIL_BIN                 path to nsjail binary
+#   REAL_CLAUDE_BIN            path to the actual claude CLI
+#   NSJAIL_OPENWRAPPER_ACTIVE  "true" if openwrapper is routing requests
+set -euo pipefail
+
+NSJAIL="${NSJAIL_BIN:?NSJAIL_BIN not set}"
+REAL_CLAUDE="${REAL_CLAUDE_BIN:?REAL_CLAUDE_BIN not set}"
+REAL_HOME="${HOME}"
+WORK_DIR="${PWD}"
+
+# Create an isolated home directory in /tmp; cleaned up on exit
+SANDBOX_HOME=$(mktemp -d /tmp/claude-sandbox-XXXXXX)
+trap 'rm -rf "$SANDBOX_HOME"' EXIT INT TERM
+
+mkdir -p "$SANDBOX_HOME/.claude"
+
+# When not routing through openwrapper, copy credentials into the sandbox so
+# claude can authenticate against the Anthropic API.  The sandbox cannot see
+# or modify the originals.
+if [[ "${NSJAIL_OPENWRAPPER_ACTIVE:-false}" != "true" ]]; then
+  [[ -f "$REAL_HOME/.claude.json" ]] \
+    && cp "$REAL_HOME/.claude.json" "$SANDBOX_HOME/.claude.json" 2>/dev/null || true
+  [[ -f "$REAL_HOME/.claude/.credentials.json" ]] \
+    && cp "$REAL_HOME/.claude/.credentials.json" "$SANDBOX_HOME/.claude/.credentials.json" 2>/dev/null || true
+  [[ -f "$REAL_HOME/.claude/settings.json" ]] \
+    && cp "$REAL_HOME/.claude/settings.json" "$SANDBOX_HOME/.claude/settings.json" 2>/dev/null || true
+fi
+
+# ── Build nsjail invocation ───────────────────────────────────────────────────
+#
+# Sandbox model:
+#   -R /          host root, read-only  (can't write to system or other home dirs)
+#   -T /tmp       isolated tmpfs        (host /tmp not visible)
+#   -B WORK_DIR   writable work tree    (claude needs to edit files here)
+#   -B SANDBOX_HOME:HOME  writable copy of home (credentials above, nothing else)
+#   --disable_clone_newnet  keep host network namespace (API access needed)
+#
+# New PID / mount / IPC / UTS namespaces are created by default.
+
+nsjail_args=(
+  --mode o
+  --log /dev/null
+  -R /
+  -T /tmp
+  -B "${WORK_DIR}:${WORK_DIR}"
+  -B "${SANDBOX_HOME}:${REAL_HOME}"
+  --disable_clone_newnet
+  --cwd "${WORK_DIR}"
+)
+
+# Pass only the env vars claude actually needs; keep the sandbox clean
+env_passthrough=(
+  "HOME=${REAL_HOME}"
+  "USER=${USER:-}"
+  "PATH=${PATH}"
+  "TERM=${TERM:-xterm}"
+  "LANG=${LANG:-en_US.UTF-8}"
+)
+
+# All ANTHROPIC_* vars (base URL, auth token, model overrides)
+while IFS= read -r line; do
+  env_passthrough+=("$line")
+done < <(env | grep '^ANTHROPIC_' || true)
+
+# CLAUDE_* vars the harness set (STT/TTS/vision models, etc.)
+# Exclude CLAUDE_PATH — inside the jail we run REAL_CLAUDE directly
+while IFS= read -r line; do
+  [[ "$line" != CLAUDE_PATH=* ]] && env_passthrough+=("$line")
+done < <(env | grep '^CLAUDE_' || true)
+
+for ev in "${env_passthrough[@]}"; do
+  nsjail_args+=(--env "$ev")
+done
+
+exec "$NSJAIL" "${nsjail_args[@]}" -- "$REAL_CLAUDE" "$@"
