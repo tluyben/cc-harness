@@ -31,11 +31,17 @@ Stream a new (or continued) conversation.
 
 **Request body** (JSON):
 
-| Field      | Type    | Required | Description                                           |
-|------------|---------|----------|-------------------------------------------------------|
-| `prompt`   | string  | ✅        | The message to send to Claude                        |
-| `dir`      | string  | ✅        | Absolute path to the project working directory        |
-| `continue` | boolean | ❌        | `true` → append to the most recent conversation (`-c`). Default: `false` |
+| Field        | Type    | Required | Description                                           |
+|--------------|---------|----------|-------------------------------------------------------|
+| `prompt`     | string  | ✅        | The message to send to Claude                        |
+| `dir`        | string  | ✅        | Absolute path to the project working directory        |
+| `continue`   | boolean | ❌        | `true` → append to the most recent conversation (`-c`). Default: `false` |
+| `as-user`    | string  | ⚠️        | OS username to run Claude as. **Required when the server runs as root** (Claude must never run as root). Optional otherwise. |
+| `system`     | string  | ❌        | System prompt override, passed to Claude via `--system-prompt`. |
+
+> **Root safety** — if the harness process is `root` and `as-user` is omitted,
+> the request is rejected with HTTP 400. Claude is always dropped to the named
+> user via `runuser` before spawning.
 
 **Response** — `text/event-stream` (SSE)
 
@@ -47,7 +53,7 @@ Common event shapes:
 data: {"type":"system","subtype":"init","session_id":"..."}
 data: {"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"Hello"}}}
 data: {"type":"result","subtype":"success","result":"Hello!","session_id":"..."}
-data: {"type":"done"}                           ← synthetic, harness clean exit
+data: {"type":"done","files":["output.txt"]}    ← synthetic, harness clean exit
 data: {"type":"error","error":{"type":"…","message":"…"}}  ← on unrecoverable error
 ```
 
@@ -61,16 +67,63 @@ Returns `{"status":"ok"}` — useful for readiness probes.
 
 ### Core variables
 
-| Variable      | Default   | Description                          |
-|---------------|-----------|--------------------------------------|
-| `PORT`        | `8080`    | TCP port the server listens on       |
-| `CLAUDE_PATH` | `claude`  | Path to the Claude CLI binary        |
+| Variable               | Default   | Description                                             |
+|------------------------|-----------|---------------------------------------------------------|
+| `PORT`                 | `8080`    | TCP port the server listens on                          |
+| `CLAUDE_PATH`          | `claude`  | Path to the Claude CLI binary                           |
+| `RETRIEVE_PROMPT_URL`  | —         | If set, enables the [retrieve worker](#retrieve-worker) |
+| `RETRIEVE_PROMPT_TOKEN`| —         | Bearer token the worker sends on all retrieve requests  |
 
 ```bash
 PORT=3000 CLAUDE_PATH=/opt/claude/bin/claude ./dist/cc-harnass
 ```
 
 Copy `.env.example` to `.env` and fill in the values you need.
+
+---
+
+### Retrieve worker
+
+When `RETRIEVE_PROMPT_URL` is set the harness starts a background worker at
+boot that connects to that URL as an SSE client and processes incoming prompt
+jobs automatically — no HTTP calls to `/prompt` required.
+
+**How it works:**
+
+1. Worker opens a persistent `GET RETRIEVE_PROMPT_URL` connection
+   (`Authorization: Bearer <RETRIEVE_PROMPT_TOKEN>` if the token is set).
+2. Each SSE `data:` event must be a JSON job object:
+
+   | Field          | Type    | Required | Description |
+   |----------------|---------|----------|-------------|
+   | `user`         | string  | ✅        | Prompt text (equivalent to `prompt` in `/prompt`) |
+   | `dir`          | string  | ✅        | Working directory for Claude |
+   | `system`       | string  | ❌        | System prompt override |
+   | `continue`     | boolean | ❌        | Resume prior conversation. Default: `false` |
+   | `as-user`      | string  | ❌/⚠️     | OS user to run Claude as (required if server is root) |
+   | `id`           | string  | ❌        | Correlation ID echoed in every response event |
+   | `response_url` | string  | ❌        | POST response events here. Default: `RETRIEVE_PROMPT_URL` |
+
+3. Jobs are processed **one at a time** — a running job is never interrupted.
+4. Claude's response events are streamed back as **NDJSON** (one JSON object
+   per line) via `POST response_url` with
+   `Content-Type: application/x-ndjson` (and the Bearer token if set).
+   If `id` was set, it is echoed into every response line.
+5. The POST body ends with `{"type":"done"}` (or `{"type":"error","error":"…"}`).
+6. On any connection error the worker reconnects with exponential back-off
+   (1 s → 30 s). An in-flight job is always allowed to finish first.
+
+**Example job event:**
+```
+data: {"user":"Summarise this repo","dir":"/srv/myproject","as-user":"claude","id":"job-42"}
+```
+
+**Example response POST body (NDJSON):**
+```
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"This "}},"id":"job-42"}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"repo …"}},"id":"job-42"}
+{"type":"done","id":"job-42"}
+```
 
 ---
 
@@ -318,7 +371,50 @@ curl -N -X POST http://localhost:8080/prompt \
 curl -N -X POST http://localhost:8080/prompt \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"What did you just say?","dir":"/tmp/myproject","continue":true}'
+
+# Run as a specific OS user (required when harness runs as root)
+curl -N -X POST http://localhost:8080/prompt \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Hello","dir":"/tmp/myproject","as-user":"claude"}'
 ```
+
+---
+
+## Examples
+
+### `examples/chat`
+
+A React + Express web UI that proxies the `/prompt` SSE stream to a browser
+chat interface with syntax-highlighted code blocks.
+
+```bash
+# Build the frontend and start the production server
+npm run example:chat
+
+# Development (live-reload vite + harness + express)
+npm --prefix examples/chat run dev
+```
+
+### `examples/prompt-server`
+
+A self-contained Node.js demo of the retrieve-worker flow.  Starts both a
+**prompt-server** (port 2222) and **cc-harness** (port 3333), wires them
+together with a generated token, then reads prompts from stdin and streams
+Claude's response back to the terminal in real time.
+
+```bash
+npm run example:prompt-server
+```
+
+What it does:
+- Generates a random Bearer token and passes it to the harness via env.
+- Spawns cc-harness on port 3333 (skips spawn if already running).
+- Starts an HTTP server on port 2222:
+  - `GET /prompts` — SSE stream the harness worker subscribes to.
+  - `POST /prompts` — harness streams Claude NDJSON response events back here.
+- For each stdin prompt, creates a fresh `/tmp/cc-<hex>` work directory and
+  pushes a job into the SSE stream.
+- Prints Claude's output token-by-token as the response arrives.
 
 ---
 
@@ -399,8 +495,13 @@ npm run build        # produces dist/cc-harnass for the current OS/arch
 
 Internally this runs:
 ```
-deno compile --allow-all --output dist/cc-harnass src/server.ts
+deno compile --allow-all --no-npm --output dist/cc-harnass src/server.ts
 ```
+
+`--no-npm` prevents Deno from embedding any `node_modules` it finds in the
+project tree (e.g. from `examples/chat`).  The harness itself uses no npm
+packages, so the flag has no functional effect — it just keeps the binary lean
+(~94 MB: Deno runtime + source files only).
 
 The binary bundles the Deno runtime — no separate Deno installation required
 on the target machine.
@@ -409,21 +510,36 @@ on the target machine.
 
 ## How it works
 
-1. Client `POST /prompt` with `{ prompt, dir, continue? }`
-2. Server validates inputs and spawns:
+### `/prompt` request path
+
+1. Client `POST /prompt` with `{ prompt, dir, continue?, "as-user"?, system? }`
+2. Server validates inputs. If running as root and `as-user` is missing → HTTP 400.
+3. Spawns Claude (optionally via `runuser -u <as-user> --`):
    ```
    claude --dangerously-skip-permissions \
           --output-format stream-json \
           --include-partial-messages \
+          [--system-prompt "<system>"] \
           [--continue] \
           -p "<prompt>"
    ```
-   in the requested working directory.
-3. Each newline-delimited JSON event emitted on Claude's stdout is forwarded
+   in the requested working directory. When `as-user` is set, `HOME`, `USER`,
+   and `LOGNAME` are overridden to match that user's environment.
+4. Each newline-delimited JSON event emitted on Claude's stdout is forwarded
    verbatim as an SSE `data:` line.
-4. A synthetic `{"type":"done"}` event is appended on clean exit.
-5. If the client disconnects, an `AbortSignal` terminates the subprocess.
+5. A synthetic `{"type":"done","files":[...]}` event is appended on clean exit
+   (`files` lists any files found in `$HOME/output/`).
+6. If the client disconnects, an `AbortSignal` terminates the subprocess.
+
+### Retrieve worker path
+
+When `RETRIEVE_PROMPT_URL` is set a background worker runs alongside the HTTP
+server. It maintains a persistent SSE connection to that URL, reads job objects
+from incoming events, calls `executeClause` (the same engine as `/prompt`), and
+streams each Claude response back to the configured response URL via NDJSON
+POST. Jobs are processed sequentially; the worker reconnects automatically on
+any network failure.
 
 Claude stores conversation history in
-`$HOME/.claude/projects/<encoded-dir>/*.jsonl` — passing `--continue` makes
+`$HOME/.claude/projects/<encoded-dir>/*.jsonl` — passing `continue: true` makes
 Claude resume that history automatically.
