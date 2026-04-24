@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n harness,server,vite -c yellow,cyan,blue --kill-others-on-fail \"npm --prefix .. start\" \"node server.js\" \"vite build --watch\"",
+    "dev": "concurrently -n harness,server,vite -c yellow,cyan,blue --kill-others-on-fail \"npm --prefix ../.. start\" \"node server.js\" \"vite build --watch\"",
     "build": "vite build",
     "start": "NODE_ENV=production node server.js",
     "preview": "vite preview"

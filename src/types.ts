@@ -9,6 +9,14 @@ export interface PromptRequest {
    * Defaults to false.
    */
   continue?: boolean;
+  /**
+   * Run Claude as this OS username. Required when the server is running as root
+   * (Claude must never run as root). Optional otherwise — omit to run as the
+   * current process user.
+   */
+  asUser?: string;
+  /** Optional system prompt passed to Claude via --system-prompt. */
+  systemPrompt?: string;
 }
 
 /** A parsed Claude stream-json event line */

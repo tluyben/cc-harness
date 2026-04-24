@@ -34,6 +34,25 @@ import {
 // ─── low-level spawn ──────────────────────────────────────────────────────────
 
 /**
+ * Resolve the home directory of `username` by querying `getent passwd`.
+ * Throws a clear error if the user does not exist.
+ */
+async function getUserHome(username: string): Promise<string> {
+  const result = await new Deno.Command("getent", {
+    args: ["passwd", username],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  const line = new TextDecoder().decode(result.stdout).trim();
+  const parts = line.split(":");
+  // passwd format: name:password:uid:gid:gecos:home:shell (7 fields)
+  if (parts.length < 6 || !parts[5]) {
+    throw new Error(`as-user: OS user not found: ${username}`);
+  }
+  return parts[5];
+}
+
+/**
  * Spawn `claude` once and yield each non-empty stdout line.
  * Throws if the process exits with a non-zero code.
  */
@@ -43,7 +62,7 @@ async function* spawnClaude(
 ): AsyncGenerator<string> {
   const claudePath = Deno.env.get("CLAUDE_PATH") || "claude";
 
-  const args: string[] = [
+  const claudeArgs: string[] = [
     "--dangerously-skip-permissions",
     "--output-format",
     "stream-json",
@@ -51,18 +70,38 @@ async function* spawnClaude(
     "--include-partial-messages",
   ];
 
-  if (request.continue) {
-    args.push("--continue");
+  if (request.systemPrompt) {
+    claudeArgs.push("--system-prompt", request.systemPrompt);
   }
 
-  args.push("-p", request.prompt);
+  if (request.continue) {
+    claudeArgs.push("--continue");
+  }
 
-  const command = new Deno.Command(claudePath, {
+  claudeArgs.push("-p", request.prompt);
+
+  // When `asUser` is set, drop privileges via `runuser` and update the
+  // user-scoped env vars so Claude finds the right ~/.claude config.
+  let cmd: string;
+  let args: string[];
+  let env = Deno.env.toObject();
+
+  if (request.asUser) {
+    const userHome = await getUserHome(request.asUser);
+    env = { ...env, HOME: userHome, USER: request.asUser, LOGNAME: request.asUser };
+    cmd = "runuser";
+    args = ["-u", request.asUser, "--", claudePath, ...claudeArgs];
+  } else {
+    cmd = claudePath;
+    args = claudeArgs;
+  }
+
+  const command = new Deno.Command(cmd, {
     args,
     cwd: request.dir,
     stdout: "piped",
     stderr: "piped",
-    env: Deno.env.toObject(),
+    env,
   });
 
   const proc = command.spawn();

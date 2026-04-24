@@ -20,6 +20,7 @@ import { executeClause } from "./executor.ts";
 import { handleMcp } from "./mcp.ts";
 import { setupClaudeTools } from "./setup.ts";
 import type { PromptRequest } from "./types.ts";
+import { startWorker } from "./worker.ts";
 
 const enc = new TextEncoder();
 
@@ -40,13 +41,29 @@ async function handlePrompt(req: Request): Promise<Response> {
     return json400("request body must be valid JSON");
   }
 
-  const { prompt, dir, continue: cont = false } = body ?? {};
+  // `as-user` is hyphenated so must be extracted via index access
+  // deno-lint-ignore no-explicit-any
+  const raw = (body as any) ?? {};
+  const { prompt, dir, continue: cont = false } = raw;
+  const asUser: string | undefined = raw["as-user"] || undefined;
 
   if (!prompt || typeof prompt !== "string") {
     return json400("`prompt` is required and must be a non-empty string");
   }
   if (!dir || typeof dir !== "string") {
     return json400("`dir` is required and must be a non-empty string");
+  }
+  if (asUser !== undefined && typeof asUser !== "string") {
+    return json400("`as-user` must be a non-empty string when provided");
+  }
+
+  // Claude must never run as root. If the server itself is root, `as-user` is
+  // mandatory so we always drop privileges before spawning Claude.
+  const isRoot = Deno.uid() === 0;
+  if (isRoot && !asUser) {
+    return json400(
+      "`as-user` is required: the server is running as root and Claude cannot run as root",
+    );
   }
 
   try {
@@ -64,7 +81,7 @@ async function handlePrompt(req: Request): Promise<Response> {
       try {
         for await (
           const line of executeClause(
-            { prompt, dir, continue: cont },
+            { prompt, dir, continue: cont, asUser },
             abort.signal,
           )
         ) {
@@ -150,6 +167,14 @@ if (import.meta.main) {
   const PORT = parseInt(Deno.env.get("PORT") ?? "8080", 10);
   // Run optional Claude tool setup before accepting requests.
   await setupClaudeTools();
+
+  // Start the retrieve worker if a URL is configured (fire-and-forget).
+  const retrieveUrl = Deno.env.get("RETRIEVE_PROMPT_URL");
+  if (retrieveUrl) {
+    const retrieveToken = Deno.env.get("RETRIEVE_PROMPT_TOKEN") || undefined;
+    startWorker(retrieveUrl, retrieveToken); // intentionally not awaited
+  }
+
   console.log(`cc-harnass listening on http://localhost:${PORT}`);
   console.log(`  claude binary : ${Deno.env.get("CLAUDE_PATH") ?? "claude"}`);
   startServer(PORT);
