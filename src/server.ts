@@ -162,8 +162,39 @@ export function startServer(port: number): Deno.HttpServer {
   return server;
 }
 
+// ---------- .env loader -------------------------------------------------------
+
+/**
+ * Load a .env file from the current working directory, giving precedence to
+ * variables already set in the process environment (CLI wins over .env).
+ * Silently ignored when the file does not exist.
+ */
+async function loadDotEnv(): Promise<void> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(".env");
+  } catch {
+    return;
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    // Strip surrounding quotes (single or double)
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) val = val.slice(1, -1);
+    if (key && !Deno.env.has(key)) Deno.env.set(key, val);
+  }
+}
+
 // ---------- entry point ----------
 if (import.meta.main) {
+  await loadDotEnv();
   const PORT = parseInt(Deno.env.get("PORT") ?? "8080", 10);
   // Run optional Claude tool setup before accepting requests.
   await setupClaudeTools();

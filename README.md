@@ -74,11 +74,23 @@ Returns `{"status":"ok"}` — useful for readiness probes.
 | `RETRIEVE_PROMPT_URL`  | —         | If set, enables the [retrieve worker](#retrieve-worker) |
 | `RETRIEVE_PROMPT_TOKEN`| —         | Bearer token the worker sends on all retrieve requests  |
 
-```bash
-PORT=3000 CLAUDE_PATH=/opt/claude/bin/claude ./dist/cc-harnass
+The harness automatically loads a `.env` file from the **current working
+directory** at startup (both `deno run` and the compiled binary).  Variables
+already present in the process environment always take precedence over `.env`
+values, so you can still override individual settings on the command line.
+
+```ini
+# .env
+PORT=3333
+CLAUDE_PATH=/opt/claude/bin/claude
+RETRIEVE_PROMPT_URL=http://localhost:2222/prompts
+RETRIEVE_PROMPT_TOKEN=my-secret-token
 ```
 
-Copy `.env.example` to `.env` and fill in the values you need.
+```bash
+./dist/cc-harnass          # picks up .env from cwd automatically
+PORT=9000 ./dist/cc-harnass  # PORT=9000 wins; rest comes from .env
+```
 
 ---
 
