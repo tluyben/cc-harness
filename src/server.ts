@@ -44,7 +44,7 @@ async function handlePrompt(req: Request): Promise<Response> {
   // `as-user` is hyphenated so must be extracted via index access
   // deno-lint-ignore no-explicit-any
   const raw = (body as any) ?? {};
-  const { prompt, dir, continue: cont = false } = raw;
+  const { prompt, dir, continue: cont = false, system } = raw;
   const asUser: string | undefined = raw["as-user"] || undefined;
 
   if (!prompt || typeof prompt !== "string") {
@@ -81,7 +81,7 @@ async function handlePrompt(req: Request): Promise<Response> {
       try {
         for await (
           const line of executeClause(
-            { prompt, dir, continue: cont, asUser },
+            { prompt, dir, continue: cont, asUser, systemPrompt: system || undefined },
             abort.signal,
           )
         ) {
