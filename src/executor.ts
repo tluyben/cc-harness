@@ -70,6 +70,15 @@ async function* spawnClaude(
     "--include-partial-messages",
   ];
 
+  // Load MCP servers from .mcp.json if present in workdir
+  const mcpConfigPath = `${request.dir}/.mcp.json`;
+  try {
+    await Deno.stat(mcpConfigPath);
+    claudeArgs.push("--mcp-config", "./.mcp.json");
+  } catch {
+    // .mcp.json doesn't exist - skip MCP config
+  }
+
   if (request.systemPrompt) {
     claudeArgs.push("--system-prompt", request.systemPrompt);
   }
