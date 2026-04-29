@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Runs claude inside bubblewrap.  Set by forge-claude — do not invoke directly.
+#
+# Required env vars (set by forge-claude, passed through by the harness):
+#   REAL_CLAUDE_BIN            path to the actual claude CLI
+#   NSJAIL_OPENWRAPPER_ACTIVE  "true" if openwrapper is routing requests
+set -euo pipefail
+
+# Debug log to separate file
+WRAPPER_LOG="/tmp/bwrap-wrapper-debug.log"
+echo "=== bwrap-wrapper invoked at $(date) ===" >> "$WRAPPER_LOG"
+echo "REAL_CLAUDE_BIN=${REAL_CLAUDE_BIN:-NOT SET}" >> "$WRAPPER_LOG"
+echo "NSJAIL_OPENWRAPPER_ACTIVE=${NSJAIL_OPENWRAPPER_ACTIVE:-NOT SET}" >> "$WRAPPER_LOG"
+echo "HOME=$HOME" >> "$WRAPPER_LOG"
+echo "PWD=$PWD" >> "$WRAPPER_LOG"
+echo "Args: $*" >> "$WRAPPER_LOG"
+
+REAL_CLAUDE="${REAL_CLAUDE_BIN:?REAL_CLAUDE_BIN not set}"
+REAL_HOME="${HOME}"
+WORK_DIR="${PWD}"
+
+# Create an isolated home directory in /tmp; cleaned up on exit
+SANDBOX_HOME=$(mktemp -d /tmp/claude-sandbox-XXXXXX)
+trap 'rm -rf "$SANDBOX_HOME"' EXIT INT TERM
+
+mkdir -p "$SANDBOX_HOME/.claude"
+
+# When not routing through openwrapper, copy credentials into the sandbox so
+# claude can authenticate against the Anthropic API.  The sandbox cannot see
+# or modify the originals.
+echo "NSJAIL_OPENWRAPPER_ACTIVE=${NSJAIL_OPENWRAPPER_ACTIVE:-false}" >> "$WRAPPER_LOG"
+echo "REAL_HOME=$REAL_HOME" >> "$WRAPPER_LOG"
+echo "SANDBOX_HOME=$SANDBOX_HOME" >> "$WRAPPER_LOG"
+if [[ "${NSJAIL_OPENWRAPPER_ACTIVE:-false}" != "true" ]]; then
+  echo "Copying credentials..." >> "$WRAPPER_LOG"
+  if [[ -f "$REAL_HOME/.claude.json" ]]; then
+    cp "$REAL_HOME/.claude.json" "$SANDBOX_HOME/.claude.json" && echo "Copied .claude.json" >> "$WRAPPER_LOG"
+  else
+    echo "WARNING: $REAL_HOME/.claude.json not found!" >> "$WRAPPER_LOG"
+  fi
+  if [[ -f "$REAL_HOME/.claude/.credentials.json" ]]; then
+    cp "$REAL_HOME/.claude/.credentials.json" "$SANDBOX_HOME/.claude/.credentials.json" && echo "Copied .credentials.json" >> "$WRAPPER_LOG"
+  else
+    echo "WARNING: $REAL_HOME/.claude/.credentials.json not found!" >> "$WRAPPER_LOG"
+  fi
+  if [[ -f "$REAL_HOME/.claude/settings.json" ]]; then
+    cp "$REAL_HOME/.claude/settings.json" "$SANDBOX_HOME/.claude/settings.json" && echo "Copied settings.json" >> "$WRAPPER_LOG"
+  fi
+  echo "Sandbox home contents:" >> "$WRAPPER_LOG"
+  ls -la "$SANDBOX_HOME/.claude/" >> "$WRAPPER_LOG" 2>&1 || echo ".claude dir not readable" >> "$WRAPPER_LOG"
+else
+  echo "Skipping credentials (using openwrapper)" >> "$WRAPPER_LOG"
+fi
+
+# ── Build bubblewrap invocation ───────────────────────────────────────────────
+#
+# Sandbox model:
+#   --ro-bind / /     host root, read-only  (can't write to system or other home dirs)
+#   --tmpfs /tmp      isolated tmpfs        (host /tmp not visible)
+#   --bind WORK_DIR   writable work tree    (claude needs to edit files here)
+#   --bind SANDBOX_HOME HOME  writable copy of home (credentials above, nothing else)
+#   --dev /dev        isolated /dev (created by bubblewrap)
+#   --proc /proc      isolated /proc (created by bubblewrap)
+#   --unshare-pid     new PID namespace (can't see host processes)
+#   --die-with-parent terminate if parent dies
+#
+# Note: bubblewrap doesn't isolate network by default (good - we need API access)
+
+bwrap_args=(
+  --ro-bind / /
+  --tmpfs /tmp
+  --bind "${WORK_DIR}" "${WORK_DIR}"
+  --bind "${SANDBOX_HOME}" "${REAL_HOME}"
+  --dev /dev
+  --proc /proc
+  --unshare-pid
+  --die-with-parent
+  --chdir "${WORK_DIR}"
+)
+
+# Pass environment variables
+# Note: bwrap uses --setenv NAME VALUE (two args) vs nsjail's --env NAME=VALUE (one arg)
+bwrap_args+=(--setenv HOME "${REAL_HOME}")
+bwrap_args+=(--setenv USER "${USER:-}")
+bwrap_args+=(--setenv PATH "${PATH}")
+bwrap_args+=(--setenv TERM "${TERM:-xterm}")
+bwrap_args+=(--setenv LANG "${LANG:-en_US.UTF-8}")
+
+# All ANTHROPIC_* vars (base URL, auth token, model overrides)
+while IFS='=' read -r name value; do
+  bwrap_args+=(--setenv "$name" "$value")
+done < <(env | grep '^ANTHROPIC_' || true)
+
+# CLAUDE_* vars the harness set (STT/TTS/vision models, etc.)
+# Exclude CLAUDE_PATH — inside the jail we run REAL_CLAUDE directly
+while IFS='=' read -r name value; do
+  [[ "$name" != "CLAUDE_PATH" ]] && bwrap_args+=(--setenv "$name" "$value")
+done < <(env | grep '^CLAUDE_' || true)
+
+echo "About to exec bwrap..." >> "$WRAPPER_LOG"
+echo "REAL_CLAUDE=$REAL_CLAUDE" >> "$WRAPPER_LOG"
+echo "bwrap_args=${bwrap_args[*]}" >> "$WRAPPER_LOG"
+echo "claude args=$*" >> "$WRAPPER_LOG"
+
+exec bwrap "${bwrap_args[@]}" -- "$REAL_CLAUDE" "$@"
