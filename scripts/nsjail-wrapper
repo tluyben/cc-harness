@@ -7,6 +7,16 @@
 #   NSJAIL_OPENWRAPPER_ACTIVE  "true" if openwrapper is routing requests
 set -euo pipefail
 
+# Debug log to separate file
+WRAPPER_LOG="/tmp/nsjail-wrapper-debug.log"
+echo "=== nsjail-wrapper invoked at $(date) ===" >> "$WRAPPER_LOG"
+echo "NSJAIL_BIN=${NSJAIL_BIN:-NOT SET}" >> "$WRAPPER_LOG"
+echo "REAL_CLAUDE_BIN=${REAL_CLAUDE_BIN:-NOT SET}" >> "$WRAPPER_LOG"
+echo "NSJAIL_OPENWRAPPER_ACTIVE=${NSJAIL_OPENWRAPPER_ACTIVE:-NOT SET}" >> "$WRAPPER_LOG"
+echo "HOME=$HOME" >> "$WRAPPER_LOG"
+echo "PWD=$PWD" >> "$WRAPPER_LOG"
+echo "Args: $*" >> "$WRAPPER_LOG"
+
 NSJAIL="${NSJAIL_BIN:?NSJAIL_BIN not set}"
 REAL_CLAUDE="${REAL_CLAUDE_BIN:?REAL_CLAUDE_BIN not set}"
 REAL_HOME="${HOME}"
@@ -21,13 +31,28 @@ mkdir -p "$SANDBOX_HOME/.claude"
 # When not routing through openwrapper, copy credentials into the sandbox so
 # claude can authenticate against the Anthropic API.  The sandbox cannot see
 # or modify the originals.
+echo "NSJAIL_OPENWRAPPER_ACTIVE=${NSJAIL_OPENWRAPPER_ACTIVE:-false}" >> "$WRAPPER_LOG"
+echo "REAL_HOME=$REAL_HOME" >> "$WRAPPER_LOG"
+echo "SANDBOX_HOME=$SANDBOX_HOME" >> "$WRAPPER_LOG"
 if [[ "${NSJAIL_OPENWRAPPER_ACTIVE:-false}" != "true" ]]; then
-  [[ -f "$REAL_HOME/.claude.json" ]] \
-    && cp "$REAL_HOME/.claude.json" "$SANDBOX_HOME/.claude.json" 2>/dev/null || true
-  [[ -f "$REAL_HOME/.claude/.credentials.json" ]] \
-    && cp "$REAL_HOME/.claude/.credentials.json" "$SANDBOX_HOME/.claude/.credentials.json" 2>/dev/null || true
-  [[ -f "$REAL_HOME/.claude/settings.json" ]] \
-    && cp "$REAL_HOME/.claude/settings.json" "$SANDBOX_HOME/.claude/settings.json" 2>/dev/null || true
+  echo "Copying credentials..." >> "$WRAPPER_LOG"
+  if [[ -f "$REAL_HOME/.claude.json" ]]; then
+    cp "$REAL_HOME/.claude.json" "$SANDBOX_HOME/.claude.json" && echo "Copied .claude.json" >> "$WRAPPER_LOG"
+  else
+    echo "WARNING: $REAL_HOME/.claude.json not found!" >> "$WRAPPER_LOG"
+  fi
+  if [[ -f "$REAL_HOME/.claude/.credentials.json" ]]; then
+    cp "$REAL_HOME/.claude/.credentials.json" "$SANDBOX_HOME/.claude/.credentials.json" && echo "Copied .credentials.json" >> "$WRAPPER_LOG"
+  else
+    echo "WARNING: $REAL_HOME/.claude/.credentials.json not found!" >> "$WRAPPER_LOG"
+  fi
+  if [[ -f "$REAL_HOME/.claude/settings.json" ]]; then
+    cp "$REAL_HOME/.claude/settings.json" "$SANDBOX_HOME/.claude/settings.json" && echo "Copied settings.json" >> "$WRAPPER_LOG"
+  fi
+  echo "Sandbox home contents:" >> "$WRAPPER_LOG"
+  ls -la "$SANDBOX_HOME/.claude/" >> "$WRAPPER_LOG" 2>&1 || echo ".claude dir not readable" >> "$WRAPPER_LOG"
+else
+  echo "Skipping credentials (using openwrapper)" >> "$WRAPPER_LOG"
 fi
 
 # ── Build nsjail invocation ───────────────────────────────────────────────────
@@ -75,5 +100,11 @@ done < <(env | grep '^CLAUDE_' || true)
 for ev in "${env_passthrough[@]}"; do
   nsjail_args+=(--env "$ev")
 done
+
+echo "About to exec nsjail..." >> "$WRAPPER_LOG"
+echo "NSJAIL=$NSJAIL" >> "$WRAPPER_LOG"
+echo "REAL_CLAUDE=$REAL_CLAUDE" >> "$WRAPPER_LOG"
+echo "nsjail_args=${nsjail_args[*]}" >> "$WRAPPER_LOG"
+echo "claude args=$*" >> "$WRAPPER_LOG"
 
 exec "$NSJAIL" "${nsjail_args[@]}" -- "$REAL_CLAUDE" "$@"
