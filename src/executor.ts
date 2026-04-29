@@ -68,6 +68,7 @@ async function* spawnClaude(
     "stream-json",
     "--verbose", // required by CLI when combining stream-json + -p
     "--include-partial-messages",
+    "--debug", // Show MCP server errors
   ];
 
   // Load MCP servers from .mcp.json if present in workdir

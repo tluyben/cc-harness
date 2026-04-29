@@ -78,6 +78,16 @@ bwrap_args=(
   --chdir "${WORK_DIR}"
 )
 
+# If WORKFLOW_SERVER_SOCKET env var is set, bind-mount its parent directory
+# so the MCP binary can connect to it (sockets need write access)
+if [[ -n "${WORKFLOW_SERVER_SOCKET:-}" ]]; then
+  SOCKET_DIR="$(dirname "$WORKFLOW_SERVER_SOCKET")"
+  if [[ -d "$SOCKET_DIR" ]]; then
+    bwrap_args+=(--bind "$SOCKET_DIR" "$SOCKET_DIR")
+    echo "Binding socket directory: $SOCKET_DIR" >> "$WRAPPER_LOG"
+  fi
+fi
+
 # Pass environment variables
 # Note: bwrap uses --setenv NAME VALUE (two args) vs nsjail's --env NAME=VALUE (one arg)
 bwrap_args+=(--setenv HOME "${REAL_HOME}")
@@ -96,6 +106,11 @@ done < <(env | grep '^ANTHROPIC_' || true)
 while IFS='=' read -r name value; do
   [[ "$name" != "CLAUDE_PATH" ]] && bwrap_args+=(--setenv "$name" "$value")
 done < <(env | grep '^CLAUDE_' || true)
+
+# Pass WORKFLOW_SERVER_SOCKET for MCP integration
+if [[ -n "${WORKFLOW_SERVER_SOCKET:-}" ]]; then
+  bwrap_args+=(--setenv "WORKFLOW_SERVER_SOCKET" "$WORKFLOW_SERVER_SOCKET")
+fi
 
 echo "About to exec bwrap..." >> "$WRAPPER_LOG"
 echo "REAL_CLAUDE=$REAL_CLAUDE" >> "$WRAPPER_LOG"
