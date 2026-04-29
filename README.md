@@ -305,9 +305,46 @@ Returns base64-encoded audio as a data-URI resource.
 | No tool model vars set | No-op — `/mcp` still served but returns empty tools list |
 | openwrapper unreachable at call time | Tool returns `isError: true` with message |
 
-### nsjail process sandbox (claudep)
+### Process sandboxing
 
-`claudep` can run each `claude` invocation inside [nsjail](https://github.com/google/nsjail), giving each call an isolated filesystem view and a fresh home directory. This prevents runaway tools from touching files outside the project, reading other users' credentials, or persisting changes to `~/.claude` between sessions.
+The harness can run each `claude` invocation inside a sandboxed environment, giving each call an isolated filesystem view and a fresh home directory. This prevents runaway tools from touching files outside the project, reading other users' credentials, or persisting changes to `~/.claude` between sessions.
+
+Two sandboxing options are available:
+
+#### Option 1: Bubblewrap (recommended)
+
+**Simpler setup, no build required.**
+
+[Bubblewrap](https://github.com/containers/bubblewrap) is a lightweight sandboxing tool that provides the same isolation as nsjail with zero build time.
+
+**Install:**
+
+```bash
+sudo apt install -y bubblewrap
+```
+
+**Use with the harness:**
+
+Set `CLAUDE_PATH` to point to `scripts/bwrap-wrapper`:
+
+```bash
+CLAUDE_PATH="$(pwd)/scripts/bwrap-wrapper" \
+REAL_CLAUDE_BIN="$(command -v claude)" \
+./dist/cc-harnass
+```
+
+Or in `.env`:
+
+```ini
+CLAUDE_PATH=/path/to/cc-harness/scripts/bwrap-wrapper
+REAL_CLAUDE_BIN=/usr/local/bin/claude
+```
+
+#### Option 2: nsjail (claudep)
+
+**More features, requires building from source.**
+
+[nsjail](https://github.com/google/nsjail) provides advanced sandboxing with more configuration options.
 
 **Enable it:**
 
@@ -336,7 +373,7 @@ sudo apt-get install bison flex libprotobuf-dev protobuf-compiler \
      libnl-3-dev libnl-route-3-dev pkg-config libcap-dev
 ```
 
-**Sandbox model:**
+**Sandbox model (both bubblewrap and nsjail):**
 
 | Resource | Access |
 |----------|--------|
@@ -344,6 +381,7 @@ sudo apt-get install bison flex libprotobuf-dev protobuf-compiler \
 | `/tmp` | Isolated tmpfs (host `/tmp` not visible) |
 | Work directory (`$PWD`) | Read-write bind |
 | `$HOME` | Per-invocation copy in `/tmp/claude-sandbox-*`, deleted on exit |
+| Processes | Isolated PID namespace (can't see host processes) |
 | Network | Host namespace (API calls reach Anthropic / openwrapper) |
 | Credentials | Copied into sandbox home on startup (when not using openwrapper) |
 
@@ -351,7 +389,18 @@ Only `HOME`, `USER`, `PATH`, `TERM`, `LANG`, `ANTHROPIC_*`, and `CLAUDE_*` env v
 
 **Combining with openwrapper:**
 
-When `OPENWRAPPER_AUTO=true` and `ENABLE_NSJAIL=true`, credentials are **not** copied into the sandbox — all API traffic is routed through openwrapper so the sandboxed `claude` never needs to read `~/.claude/.credentials.json`.
+When using openwrapper routing (`NSJAIL_OPENWRAPPER_ACTIVE=true`), credentials are **not** copied into the sandbox — all API traffic is routed through openwrapper so the sandboxed `claude` never needs to read `~/.claude/.credentials.json`.
+
+**Which to choose?**
+
+| Feature | Bubblewrap | nsjail |
+|---------|------------|--------|
+| **Setup time** | ~5 seconds | ~90 seconds |
+| **Dependencies** | 0 (just bubblewrap) | 8 build packages |
+| **Security** | Strong ✅ | Strong ✅ |
+| **Complexity** | Low | High |
+
+**Recommendation:** Use bubblewrap unless you need nsjail's advanced features.
 
 ---
 
