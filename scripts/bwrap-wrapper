@@ -19,11 +19,22 @@ REAL_CLAUDE="${REAL_CLAUDE_BIN:?REAL_CLAUDE_BIN not set}"
 REAL_HOME="${HOME}"
 WORK_DIR="${PWD}"
 
-# Create an isolated home directory in /tmp; cleaned up on exit
-SANDBOX_HOME=$(mktemp -d /tmp/claude-sandbox-XXXXXX)
+# Create an isolated home directory OUTSIDE /tmp (since --tmpfs /tmp will hide it!)
+# Prefer /run/user/$UID (systemd user runtime), fallback to /var/tmp
+if [[ -d "/run/user/$(id -u)" ]]; then
+  SANDBOX_HOME=$(mktemp -d /run/user/$(id -u)/claude-sandbox-XXXXXX)
+else
+  SANDBOX_HOME=$(mktemp -d /var/tmp/claude-sandbox-XXXXXX)
+fi
 trap 'rm -rf "$SANDBOX_HOME"' EXIT INT TERM
 
+# Create all directories Claude needs to write to
 mkdir -p "$SANDBOX_HOME/.claude"
+mkdir -p "$SANDBOX_HOME/.claude/projects"
+mkdir -p "$SANDBOX_HOME/.claude/todos"
+mkdir -p "$SANDBOX_HOME/.claude/statsig"
+mkdir -p "$SANDBOX_HOME/.claude/skills"
+mkdir -p "$SANDBOX_HOME/.local/share/claude/versions"
 
 # When not routing through openwrapper, copy credentials into the sandbox so
 # claude can authenticate against the Anthropic API.  The sandbox cannot see
@@ -68,9 +79,10 @@ fi
 
 bwrap_args=(
   --ro-bind / /
+  --tmpfs /home              # HIDE the entire /home directory (makes it empty tmpfs)
   --tmpfs /tmp
   --bind "${WORK_DIR}" "${WORK_DIR}"
-  --bind "${SANDBOX_HOME}" "${REAL_HOME}"
+  --bind "${SANDBOX_HOME}" /home/sandbox  # Our isolated writable home
   --dev /dev
   --proc /proc
   --unshare-pid
@@ -90,7 +102,8 @@ fi
 
 # Pass environment variables
 # Note: bwrap uses --setenv NAME VALUE (two args) vs nsjail's --env NAME=VALUE (one arg)
-bwrap_args+=(--setenv HOME "${REAL_HOME}")
+# Set HOME to /home/sandbox (our writable bind mount, not the read-only real home)
+bwrap_args+=(--setenv HOME /home/sandbox)
 bwrap_args+=(--setenv USER "${USER:-}")
 bwrap_args+=(--setenv PATH "${PATH}")
 bwrap_args+=(--setenv TERM "${TERM:-xterm}")
