@@ -74,7 +74,7 @@ async function* spawnClaude(
   const mcpConfigPath = `${request.dir}/.mcp.json`;
   try {
     await Deno.stat(mcpConfigPath);
-    claudeArgs.push("--mcp-config", "./.mcp.json");
+    claudeArgs.push("--mcp-config", mcpConfigPath);  // Use absolute path
   } catch {
     // .mcp.json doesn't exist - skip MCP config
   }
