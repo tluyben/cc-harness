@@ -20,15 +20,26 @@ REAL_HOME="${HOME}"
 WORK_DIR="${PWD}"
 
 # Create an isolated home directory OUTSIDE /tmp (since --tmpfs /tmp will hide it!)
-# Prefer /run/user/$UID (systemd user runtime), fallback to /var/tmp
-if [[ -d "/run/user/$(id -u)" ]]; then
-  SANDBOX_HOME=$(mktemp -d /run/user/$(id -u)/claude-sandbox-XXXXXX)
+# If CLAUDE_SANDBOX_HOME is set (from forge-claude), use that for persistence across invocations
+# Otherwise create a temporary one (for standalone use)
+if [[ -n "${CLAUDE_SANDBOX_HOME:-}" ]]; then
+  SANDBOX_HOME="$CLAUDE_SANDBOX_HOME"
+  PERSISTENT_HOME=true
+  echo "Using persistent sandbox home: $SANDBOX_HOME" >> "$WRAPPER_LOG"
 else
-  SANDBOX_HOME=$(mktemp -d /var/tmp/claude-sandbox-XXXXXX)
+  # Prefer /run/user/$UID (systemd user runtime), fallback to /var/tmp
+  if [[ -d "/run/user/$(id -u)" ]]; then
+    SANDBOX_HOME=$(mktemp -d /run/user/$(id -u)/claude-sandbox-XXXXXX)
+  else
+    SANDBOX_HOME=$(mktemp -d /var/tmp/claude-sandbox-XXXXXX)
+  fi
+  PERSISTENT_HOME=false
+  # Only trap cleanup if we created it (don't delete persistent home)
+  trap 'rm -rf "$SANDBOX_HOME"' EXIT INT TERM
+  echo "Using temporary sandbox home: $SANDBOX_HOME" >> "$WRAPPER_LOG"
 fi
-trap 'rm -rf "$SANDBOX_HOME"' EXIT INT TERM
 
-# Create all directories Claude needs to write to
+# Create all directories Claude needs to write to (idempotent - safe to run multiple times)
 mkdir -p "$SANDBOX_HOME/.claude"
 mkdir -p "$SANDBOX_HOME/.claude/projects"
 mkdir -p "$SANDBOX_HOME/.claude/todos"
@@ -39,26 +50,33 @@ mkdir -p "$SANDBOX_HOME/.local/share/claude/versions"
 # When not routing through openwrapper, copy credentials into the sandbox so
 # claude can authenticate against the Anthropic API.  The sandbox cannot see
 # or modify the originals.
+# If using a persistent sandbox home, only copy on first invocation (when files don't exist)
 echo "NSJAIL_OPENWRAPPER_ACTIVE=${NSJAIL_OPENWRAPPER_ACTIVE:-false}" >> "$WRAPPER_LOG"
 echo "REAL_HOME=$REAL_HOME" >> "$WRAPPER_LOG"
 echo "SANDBOX_HOME=$SANDBOX_HOME" >> "$WRAPPER_LOG"
+echo "PERSISTENT_HOME=$PERSISTENT_HOME" >> "$WRAPPER_LOG"
 if [[ "${NSJAIL_OPENWRAPPER_ACTIVE:-false}" != "true" ]]; then
-  echo "Copying credentials..." >> "$WRAPPER_LOG"
-  if [[ -f "$REAL_HOME/.claude.json" ]]; then
-    cp "$REAL_HOME/.claude.json" "$SANDBOX_HOME/.claude.json" && echo "Copied .claude.json" >> "$WRAPPER_LOG"
+  # Copy credentials if they don't already exist in sandbox (or if non-persistent)
+  if [[ ! -f "$SANDBOX_HOME/.claude.json" ]] || [[ "$PERSISTENT_HOME" != "true" ]]; then
+    echo "Copying credentials..." >> "$WRAPPER_LOG"
+    if [[ -f "$REAL_HOME/.claude.json" ]]; then
+      cp "$REAL_HOME/.claude.json" "$SANDBOX_HOME/.claude.json" && echo "Copied .claude.json" >> "$WRAPPER_LOG"
+    else
+      echo "WARNING: $REAL_HOME/.claude.json not found!" >> "$WRAPPER_LOG"
+    fi
+    if [[ -f "$REAL_HOME/.claude/.credentials.json" ]]; then
+      cp "$REAL_HOME/.claude/.credentials.json" "$SANDBOX_HOME/.claude/.credentials.json" && echo "Copied .credentials.json" >> "$WRAPPER_LOG"
+    else
+      echo "WARNING: $REAL_HOME/.claude/.credentials.json not found!" >> "$WRAPPER_LOG"
+    fi
+    if [[ -f "$REAL_HOME/.claude/settings.json" ]]; then
+      cp "$REAL_HOME/.claude/settings.json" "$SANDBOX_HOME/.claude/settings.json" && echo "Copied settings.json" >> "$WRAPPER_LOG"
+    fi
+    echo "Sandbox home contents:" >> "$WRAPPER_LOG"
+    ls -la "$SANDBOX_HOME/.claude/" >> "$WRAPPER_LOG" 2>&1 || echo ".claude dir not readable" >> "$WRAPPER_LOG"
   else
-    echo "WARNING: $REAL_HOME/.claude.json not found!" >> "$WRAPPER_LOG"
+    echo "Credentials already exist in persistent sandbox (skipping copy)" >> "$WRAPPER_LOG"
   fi
-  if [[ -f "$REAL_HOME/.claude/.credentials.json" ]]; then
-    cp "$REAL_HOME/.claude/.credentials.json" "$SANDBOX_HOME/.claude/.credentials.json" && echo "Copied .credentials.json" >> "$WRAPPER_LOG"
-  else
-    echo "WARNING: $REAL_HOME/.claude/.credentials.json not found!" >> "$WRAPPER_LOG"
-  fi
-  if [[ -f "$REAL_HOME/.claude/settings.json" ]]; then
-    cp "$REAL_HOME/.claude/settings.json" "$SANDBOX_HOME/.claude/settings.json" && echo "Copied settings.json" >> "$WRAPPER_LOG"
-  fi
-  echo "Sandbox home contents:" >> "$WRAPPER_LOG"
-  ls -la "$SANDBOX_HOME/.claude/" >> "$WRAPPER_LOG" 2>&1 || echo ".claude dir not readable" >> "$WRAPPER_LOG"
 else
   echo "Skipping credentials (using openwrapper)" >> "$WRAPPER_LOG"
 fi

@@ -349,6 +349,7 @@ export async function* executeClause(
       console.error(
         `[cc-harnass] ${pendingError.errorType} — attempt ${limitedAttempt}/${MAX_LIMITED_RETRIES}, retrying in ${delay}ms …`,
       );
+      console.error(`[cc-harnass] ERROR DETAILS: ${pendingError.message}`);
       await sleep(delay);
       continue main;
     }
