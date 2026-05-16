@@ -97,35 +97,53 @@ PORT=9000 ./dist/cc-harnass  # PORT=9000 wins; rest comes from .env
 ### Retrieve worker
 
 When `RETRIEVE_PROMPT_URL` is set the harness starts a background worker at
-boot that connects to that URL as an SSE client and processes incoming prompt
-jobs automatically — no HTTP calls to `/prompt` required.
+boot that connects to that URL as an SSE client and processes incoming frames
+automatically — no HTTP calls to `/prompt` required.
 
 **How it works:**
 
 1. Worker opens a persistent `GET RETRIEVE_PROMPT_URL` connection
    (`Authorization: Bearer <RETRIEVE_PROMPT_TOKEN>` if the token is set).
-2. Each SSE `data:` event must be a JSON job object:
+   Each successful connection logs `[worker] SSE connected`.
+2. Each SSE `data:` event must be a JSON object. The optional `type` field
+   selects the frame kind:
 
-   | Field          | Type    | Required | Description |
-   |----------------|---------|----------|-------------|
-   | `user`         | string  | ✅        | Prompt text (equivalent to `prompt` in `/prompt`) |
-   | `dir`          | string  | ✅        | Working directory for Claude |
-   | `system`       | string  | ❌        | System prompt override |
-   | `continue`     | boolean | ❌        | Resume prior conversation. Default: `false` |
-   | `as-user`      | string  | ❌/⚠️     | OS user to run Claude as (required if server is root) |
-   | `id`           | string  | ❌        | Correlation ID echoed in every response event |
-   | `response_url` | string  | ❌        | POST response events here. Default: `RETRIEVE_PROMPT_URL` |
+   - `"prompt"` (default if `type` is missing) — runs Claude in `dir`
+   - `"exec"` — runs a whitelisted local script (see below)
+   - `"connected"` — server hello, silently ignored
+   - anything else — logged and skipped
 
-3. Jobs are processed **one at a time** — a running job is never interrupted.
-4. Claude's response events are streamed back as **NDJSON** (one JSON object
-   per line) via `POST response_url` with
-   `Content-Type: application/x-ndjson` (and the Bearer token if set).
-   If `id` was set, it is echoed into every response line.
-5. The POST body ends with `{"type":"done"}` (or `{"type":"error","error":"…"}`).
-6. On any connection error the worker reconnects with exponential back-off
-   (1 s → 30 s). An in-flight job is always allowed to finish first.
+3. Responses are streamed back as **NDJSON** (one JSON object per line) via
+   `POST response_url` with `Content-Type: application/x-ndjson` (and the
+   Bearer token if set). If `id` was set on the frame, it is echoed into every
+   response line.
+4. On any connection error the worker reconnects with exponential back-off
+   (1 s → 30 s). In-flight prompts and execs are **never** interrupted by a
+   reconnect — they keep streaming to their own `response_url`.
 
-**Example job event:**
+#### Prompt frames
+
+| Field          | Type    | Required | Description |
+|----------------|---------|----------|-------------|
+| `type`         | string  | ❌        | `"prompt"` (default if omitted, for back-compat) |
+| `user`         | string  | ✅        | Prompt text (equivalent to `prompt` in `/prompt`) |
+| `dir`          | string  | ✅        | Working directory for Claude |
+| `system`       | string  | ❌        | System prompt override |
+| `continue`     | boolean | ❌        | Resume prior conversation. Default: `false` |
+| `as-user`      | string  | ❌/⚠️     | OS user to run Claude as (required if server is root). `asUser` is accepted as an alias. |
+| `id`           | string  | ❌        | Correlation ID echoed in every response event |
+| `response_url` | string  | ❌        | POST response events here. Default: `RETRIEVE_PROMPT_URL` |
+
+Prompts are **serialized per `dir`** — two prompts for the same directory
+queue and run one after the other (Claude would clobber its own session
+state otherwise). Prompts for **different** directories run in parallel, so
+multiple chats can progress concurrently. The per-dir queue persists across
+SSE reconnects.
+
+The response stream ends with `{"type":"done"}` (or
+`{"type":"error","error":"…"}` on failure).
+
+**Example prompt frame:**
 ```
 data: {"user":"Summarise this repo","dir":"/srv/myproject","as-user":"claude","id":"job-42"}
 ```
@@ -136,6 +154,78 @@ data: {"user":"Summarise this repo","dir":"/srv/myproject","as-user":"claude","i
 {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"repo …"}},"id":"job-42"}
 {"type":"done","id":"job-42"}
 ```
+
+#### Exec frames (push-tool calls)
+
+Lets the server push a one-shot local command — e.g. spin up a port, run a
+setup script, restart a sidecar — **without** going through Claude. Useful
+for instrumenting an environment before (or alongside) a chat.
+
+Only **pre-registered** scripts can be invoked. Register them with one or
+more `--script` flags on the harness CLI:
+
+```
+--script <name>=<path>[:<arg1>,<arg2>,...]
+```
+
+| Field          | Type   | Required | Description |
+|----------------|--------|----------|-------------|
+| `type`         | string | ✅        | Must be `"exec"` |
+| `script`       | string | ✅        | Registered script name |
+| `args`         | object | ❌        | Named arg values (`{port: 3002, host: "0.0.0.0"}`); resolved against the declared arg order and passed positionally to the script. Unknown or missing keys → error event. |
+| `as-user`      | string | ❌        | OS user to run as (via `runuser`). `asUser` alias accepted. |
+| `id`           | string | ❌        | Correlation ID echoed in every response event |
+| `response_url` | string | ❌        | POST response events here. Default: `RETRIEVE_PROMPT_URL` |
+
+Exec frames are dispatched **immediately** and run in parallel to any
+in-flight prompts. The server controls ordering by awaiting the `done`
+response before sending its next frame.
+
+The response stream is the same NDJSON channel as prompts:
+
+```
+{"type":"stdout","line":"listening on 3002","id":"exec-1"}
+{"type":"stderr","line":"warning: ...","id":"exec-1"}
+{"type":"done","exit":0,"id":"exec-1"}
+```
+
+Validation failures (unknown script, unknown arg, missing arg, spawn failure)
+produce a terminal `{"type":"error","error":"...","id":"..."}` event.
+
+**Example: register two scripts and call one**
+
+Server CLI:
+```bash
+RETRIEVE_PROMPT_URL=https://control/prompts \
+RETRIEVE_PROMPT_TOKEN=sk-... \
+./dist/cc-harnass \
+  --script setup=/opt/cc/setup.sh:port,host \
+  --script restart=/opt/cc/restart.sh
+```
+
+`/opt/cc/setup.sh` receives args positionally:
+```sh
+#!/bin/sh
+# $1 = port, $2 = host  (declared order on the CLI)
+echo "starting on $2:$1"
+```
+
+Server pushes an exec frame:
+```
+data: {"type":"exec","script":"setup","args":{"port":3002,"host":"0.0.0.0"},"as-user":"root","id":"exec-1"}
+```
+
+Harness POSTs back to `response_url`:
+```
+{"type":"stdout","line":"starting on 0.0.0.0:3002","id":"exec-1"}
+{"type":"done","exit":0,"id":"exec-1"}
+```
+
+> **Safety** — only names declared with `--script` are runnable; arbitrary
+> shell strings from the server are **never** executed. Args are passed
+> positionally as separate `argv` entries (no shell interpretation), so
+> values like `port=3002; rm -rf /` would simply become a single `$1`
+> string. Combine with `as-user` to drop privileges via `runuser`.
 
 ---
 
@@ -496,6 +586,11 @@ Tests cover:
 3. Streaming — multiple partial `assistant` events arrive before `result`
 4. Health endpoint
 5. Input validation (400 on missing fields)
+6. Worker frame parsing (`tests/worker.test.ts`) — `--script` CLI parsing,
+   `readFrames` discriminator (prompt / exec / connected / unknown / malformed),
+   `runScript` (positional args, stderr capture, non-zero exit, validation
+   errors), and an end-to-end fake-SSE-server → exec frame → NDJSON POST
+   round-trip. No live `claude` required for this file.
 
 ---
 
@@ -595,11 +690,21 @@ on the target machine.
 ### Retrieve worker path
 
 When `RETRIEVE_PROMPT_URL` is set a background worker runs alongside the HTTP
-server. It maintains a persistent SSE connection to that URL, reads job objects
-from incoming events, calls `executeClause` (the same engine as `/prompt`), and
-streams each Claude response back to the configured response URL via NDJSON
-POST. Jobs are processed sequentially; the worker reconnects automatically on
-any network failure.
+server. It maintains a persistent SSE connection to that URL, reads frames
+from incoming events, and dispatches them by `type`:
+
+- **`prompt` frames** call `executeClause` (the same engine as `/prompt`).
+  Prompts serialize per `dir` (so two chats in the same directory queue) and
+  run in parallel across different `dir`s. Claude's response is streamed back
+  as NDJSON to the frame's `response_url`.
+- **`exec` frames** invoke a script registered with `--script <name>=<path>[:args]`.
+  Stdout/stderr/exit are streamed back as NDJSON. Execs dispatch immediately
+  and never block prompts.
+- **`connected`** and unknown types are ignored.
+
+The worker reconnects automatically on any network failure. In-flight prompts
+and execs are not interrupted by a reconnect — they keep streaming to their
+own `response_url`. The per-dir prompt queue persists across reconnects.
 
 Claude stores conversation history in
 `$HOME/.claude/projects/<encoded-dir>/*.jsonl` — passing `continue: true` makes

@@ -18,6 +18,7 @@
 
 import { executeClause } from "./executor.ts";
 import { handleMcp } from "./mcp.ts";
+import { parseScriptFlags } from "./scriptRunner.ts";
 import { setupClaudeTools } from "./setup.ts";
 import type { PromptRequest } from "./types.ts";
 import { startWorker } from "./worker.ts";
@@ -203,7 +204,14 @@ if (import.meta.main) {
   const retrieveUrl = Deno.env.get("RETRIEVE_PROMPT_URL");
   if (retrieveUrl) {
     const retrieveToken = Deno.env.get("RETRIEVE_PROMPT_TOKEN") || undefined;
-    startWorker(retrieveUrl, retrieveToken); // intentionally not awaited
+    let registry;
+    try {
+      registry = parseScriptFlags(Deno.args);
+    } catch (err) {
+      console.error(`fatal: ${err instanceof Error ? err.message : err}`);
+      Deno.exit(2);
+    }
+    startWorker(retrieveUrl, retrieveToken, registry); // intentionally not awaited
   }
 
   console.log(`cc-harnass listening on http://localhost:${PORT}`);
